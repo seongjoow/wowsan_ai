@@ -63,6 +63,7 @@ class PerformanceDataset(Dataset):
     def _prepare_data(self, data):
         X = []
         y = []
+        indices = []  # 추가: 인덱스 저장용 리스트
         target_col = f"{self.target_node}_{self.target_feature}"
         
         # 입력과 예측 구간의 총 길이
@@ -76,7 +77,11 @@ class PerformanceDataset(Dataset):
             # 타겟 데이터 준비 (t+3 ~ t+4)
             target_values = data[i+self.input_timesteps:i+total_window][target_col].values
             y.append(target_values)
+
+            # 추가: 첫 번째 시점의 인덱스 저장
+            indices.append(data.index[i])
         
+        self.indices = np.array(indices)  # 클래스 변수로 저장
         return np.array(X, dtype=np.float32), np.array(y, dtype=np.float32)
     
     def __len__(self):
@@ -320,6 +325,30 @@ class ExperimentManager:
             'best_val_loss': self.best_val_loss
         }
         torch.save(checkpoint, self.save_dir / filename)
+
+    def _get_unique_filename(self, base_path: Path) -> Path:
+        """
+        같은 이름의 파일이 있을 경우 번호를 붙여서 unique한 파일명 생성
+        
+        Args:
+            base_path: 원본 파일 경로 (Path 객체)
+            
+        Returns:
+            unique한 파일 경로 (Path 객체)
+        """
+        if not base_path.exists():
+            return base_path
+            
+        directory = base_path.parent
+        name = base_path.stem
+        extension = base_path.suffix
+        counter = 1
+        
+        while True:
+            new_path = directory / f"{name}_{counter}{extension}"
+            if not new_path.exists():
+                return new_path
+            counter += 1
     
     def plot_training_history(self):
         plt.figure(figsize=(10, 6))
@@ -329,18 +358,29 @@ class ExperimentManager:
         plt.ylabel('Loss')
         plt.title('Training History')
         plt.legend()
-        plt.show() 
-        plt.savefig(self.save_dir / 'training_history.png')
+
+        # 유니크한 파일명으로 저장
+        save_path = self._get_unique_filename(self.save_dir / 'training_history.png')
+        plt.savefig(save_path)
+        # plt.savefig(self.save_dir / 'training_history.png')
+        plt.show()
         plt.close()
         
     def visualize_attention(self, 
                             sample_data: torch.Tensor,
                             node_names: List[str],
                             feature_names: List[str],
-                            layer_idx: int = 0):
+                            layer_idx: int = 0,
+                            test_dataset = None): # 추가: test_dataset 인자 추가
         """특정 레이어의 어텐션 맵 시각화"""
         self.model.eval()
         attention_weights = self.model.get_attention_weights(sample_data)
+        
+        # 현재 시각화하는 데잍의 인덱스 찾기
+        batch_idx = 0 # 첫 번째 배치의
+        data_idx = 0 # 첫 번째 데이터의
+        original_index = test_dataset.indices[batch_idx * test_dataset.batch_size + data_idx] # 원본 데이터의 인덱스
+        print(f"Original index: {original_index}")
         
         if not attention_weights or layer_idx >= len(attention_weights):
             print(f"Attention weights not available for layer {layer_idx}")
@@ -363,7 +403,7 @@ class ExperimentManager:
         
         # Attention weights have shape (seq_len, seq_len), adjust labels accordingly
         plt.figure(figsize=(20, 16))
-    # Detach the tensor before converting to NumPy array
+        # Detach the tensor before converting to NumPy array
         sns.heatmap(layer_attention.detach().cpu().numpy(), 
               xticklabels=labels,
               yticklabels=labels,
@@ -373,9 +413,11 @@ class ExperimentManager:
         plt.title(f'Attention Weights (Layer {layer_idx+1})')
         plt.tight_layout()
         
-        plt.show() 
-        plt.savefig(self.save_dir / f'attention_map_layer_{layer_idx+1}.png')
-        
+        # 유니크한 파일명으로 저장
+        save_path = self._get_unique_filename(self.save_dir / f'attention_map_layer_{layer_idx+1}.png')
+        plt.savefig(save_path)
+        # plt.savefig(self.save_dir / f'attention_map_layer_{layer_idx+1}.png')
+        plt.show()
         plt.close()
 
 def calculate_metrics(y_true, y_pred):
@@ -399,7 +441,7 @@ def calculate_metrics(y_true, y_pred):
     return metrics
 
 def prepare_data(file_path, input_timesteps, forecast_horizon, target_node, target_feature, 
-                 selected_features=None, test_size=0.2, val_size=0.1):
+                 selected_features=None, test_size=0.2, val_size=0.1, batch_size=32):
     """
     데이터 준비 및 전처리
     
@@ -414,7 +456,10 @@ def prepare_data(file_path, input_timesteps, forecast_horizon, target_node, targ
         val_size: 검증 세트 비율
     """
     # CSV 파일 로드
-    df = pd.read_csv(file_path, index_col=0)
+    # df = pd.read_csv(file_path, index_col=0)
+    df = pd.read_csv(file_path)
+    df['date'] = pd.to_datetime(df['date']) #  date 컬럼을 datetime 형식으로 변환
+    df.set_index('date', inplace=True) # date 컬럼을 인덱스로 설정
     
     # 데이터 분할
     total_size = len(df)
@@ -430,14 +475,19 @@ def prepare_data(file_path, input_timesteps, forecast_horizon, target_node, targ
         train_df, input_timesteps, forecast_horizon, 
         target_node, target_feature, selected_features
     )
+    train_dataset.batch_size = batch_size
+
     val_dataset = PerformanceDataset(
         val_df, input_timesteps, forecast_horizon, 
         target_node, target_feature, selected_features
     )
+    val_dataset.batch_size = batch_size
+
     test_dataset = PerformanceDataset(
         test_df, input_timesteps, forecast_horizon, 
         target_node, target_feature, selected_features
     )
+    test_dataset.batch_size = batch_size
     
     # 데이터 정규화
     scaler_X = StandardScaler()
@@ -461,7 +511,7 @@ def prepare_data(file_path, input_timesteps, forecast_horizon, target_node, targ
 if __name__ == "__main__":
     # Parameters
     # file_path = baseurl + "/m"
-    file_path= baseurl + '/preprocessed_data_slotted/89/merged_df.csv'
+    file_path= './preprocessed_data_slotted/89/merged_df.csv'
     input_timesteps = 3
     forecast_horizon = 2
     target_node = "B2"
@@ -478,7 +528,13 @@ if __name__ == "__main__":
     
     # Prepare data
     train_dataset, val_dataset, test_dataset, scaler_X, scaler_y, node_names, feature_names = prepare_data(
-        file_path, input_timesteps, forecast_horizon, target_node, target_feature, selected_features
+        file_path,
+        input_timesteps,
+        forecast_horizon,
+        target_node,
+        target_feature,
+        selected_features,
+        batch_size=batch_size
     )
     
     train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True)
@@ -523,4 +579,18 @@ if __name__ == "__main__":
     # Visualize attention weights
     sample_data, _ = next(iter(test_loader))
     sample_data = sample_data.to(device)
-    experiment.visualize_attention(sample_data, node_names, feature_names, layer_idx=0)
+    # num_layers = len(model.encoder_layers) # 전체 레이어에 대한 어텐션 맵 시각화
+    # for i in range(num_layers):
+    #     experiment.visualize_attention(
+    #         sample_data,
+    #         node_names,
+    #         feature_names,
+    #         layer_idx=i,
+    #         test_dataset=test_dataset)
+
+    experiment.visualize_attention(
+        sample_data,
+        node_names,
+        feature_names,
+        layer_idx=0,
+        test_dataset=test_dataset)
