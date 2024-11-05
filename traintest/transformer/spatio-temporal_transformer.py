@@ -13,7 +13,7 @@ import json
 from pathlib import Path
 
 print(torch.__version__)
-baseurl="/content/drive/MyDrive/Colab Drive"
+
 # 로깅 설정
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -387,7 +387,19 @@ class ExperimentManager:
                          node_names: List[str],
                          feature_names: List[str],
                          layer_idx: int = 0,
-                         test_dataset = None):
+                         test_dataset = None,
+                         timestamp = None):
+        """
+        특정 레이어의 어텐션 맵 시각화
+        
+        Args:
+            sample_data: 입력 데이터 텐서 (batch, timesteps * nodes * features)
+            node_names: 노드 이름 리스트
+            feature_names: 특성 이름 리스트
+            layer_idx: 시각화할 레이어 인덱스
+            test_dataset: 테스트 데이터셋
+            timestamp: 시각화 대상 시점 (str 또는 datetime)
+        """
         self.model.eval()
         attention_weights = self.model.get_attention_weights(sample_data)
         
@@ -408,16 +420,37 @@ class ExperimentManager:
                     labels.append(f"t{t+1}_{n}_{f}")
         
         plt.figure(figsize=(20, 16))
-        sns.heatmap(layer_attention.detach().cpu().numpy(), 
+
+        # 히트맵 생성
+        ax = sns.heatmap(layer_attention.detach().cpu().numpy(), 
               xticklabels=labels,
               yticklabels=labels,
               cmap='viridis')
+        
+        # x축 레이블을 위쪽에 표시
+        ax.xaxis.tick_top()
+        ax.xaxis.set_label_position('top')
+
         plt.xticks(rotation=90)
         plt.yticks(rotation=0)
-        plt.title(f'Attention Weights (Layer {layer_idx+1})')
+
+        # 제목 설정 (timestamp가 있는 경우 포함)
+        title = f'Attention Weights (Layer {layer_idx+1})'
+        if timestamp:
+            if isinstance(timestamp, str):
+                timestamp = pd.to_datetime(timestamp)
+            title += f'\nTimestamp: {timestamp.strftime("%Y-%m-%d %H:%M:%S")}'
+        plt.title(title)
+
         plt.tight_layout()
+
+        # 파일명에 timestamp 포함
+        filename = f'attention_map_layer_{layer_idx+1}'
+        if timestamp:
+            filename += f'_{timestamp.strftime("%Y%m%d_%H%M%S")}'
+        filename += '.png'
         
-        plt.savefig(self.save_dir / f'attention_map_layer_{layer_idx+1}.png')
+        plt.savefig(self.save_dir / filename)
         plt.close()
 
 def calculate_metrics(y_true, y_pred):
@@ -511,6 +544,8 @@ def prepare_data(file_path, input_timesteps, forecast_horizon, target_node, targ
     return train_dataset, val_dataset, test_dataset, scaler_X, scaler_y, node_names, feature_names
 
 if __name__ == "__main__":
+    from utils import find_data_by_date
+
     # Parameters
     experiment_config = {
         'file_path': './preprocessed_data_slotted/89/merged_df.csv',
@@ -588,31 +623,13 @@ if __name__ == "__main__":
     # sample_data = sample_data.to(device)
 
     # 특정 데이터에 대한 어텐션 맵 시각화
-    def find_data_by_date(dataset, target_date):
-        """
-        주어진 날짜에 해당하는 데이터의 인덱스를 찾는 함수
-        
-        Args:
-            dataset: PerformanceDataset 객체
-            target_date: 찾고자 하는 날짜 (str 또는 datetime 형식)
-
-        Returns:
-            해당 날짜에 해당하는 데이터의 인덱스
-
-        """
-        if isinstance(target_date, str):
-            target_date = pd.to_datetime(target_date)
-
-        idx = np.where(dataset.indices == target_date)[0][0]
-        # # dataset.indices에서 target_date와 가장 가까운 날짜 찾기
-        # idx = np.argmin(abs(dataset.indices - target_date))
-
-        return idx
-        
     # Visualize attention weights for a specific date
     target_date = "2024-08-03 21:09:00"  # 원하는 날짜 지정
     data_idx = find_data_by_date(test_dataset, target_date)
     sample_data = test_dataset[data_idx][0].unsqueeze(0).to(device)
+
+    # 실제 사용된 날짜 (정확한 날짜가 없는 경우 가장 가까운 날짜가 사용됨)
+    actual_date = test_dataset.indices[data_idx]
 
     # 전체 레이어에 대한 어텐션 맵 시각화
     num_layers = len(model.encoder_layers)
@@ -622,4 +639,6 @@ if __name__ == "__main__":
             node_names,
             feature_names,
             layer_idx=i,
-            test_dataset=test_dataset)
+            test_dataset=test_dataset,
+            timestamp=actual_date  # 실제 사용된 날짜 전달
+        )
