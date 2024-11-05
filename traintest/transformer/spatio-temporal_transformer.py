@@ -376,11 +376,11 @@ class ExperimentManager:
         self.model.eval()
         attention_weights = self.model.get_attention_weights(sample_data)
         
-        # 현재 시각화하는 데잍의 인덱스 찾기
-        batch_idx = 0 # 첫 번째 배치의
-        data_idx = 0 # 첫 번째 데이터의
-        original_index = test_dataset.indices[batch_idx * test_dataset.batch_size + data_idx] # 원본 데이터의 인덱스
-        print(f"Original index: {original_index}")
+        # # 현재 시각화하는 데이터의 인덱스 찾기
+        # batch_idx = 0 # 첫 번째 배치의
+        # data_idx = 0 # 첫 번째 데이터의
+        # original_index = test_dataset.indices[batch_idx * test_dataset.batch_size + data_idx] # 원본 데이터의 인덱스
+        # print(f"Original index: {original_index}")
         
         if not attention_weights or layer_idx >= len(attention_weights):
             print(f"Attention weights not available for layer {layer_idx}")
@@ -512,11 +512,11 @@ if __name__ == "__main__":
     # Parameters
     # file_path = baseurl + "/m"
     file_path= './preprocessed_data_slotted/89/merged_df.csv'
-    input_timesteps = 3
+    input_timesteps = 10
     forecast_horizon = 2
     target_node = "B2"
     target_feature = "ResponseTime"
-    selected_features = ["Cpu", "Memory", "Throughput", "ResponseTime"]
+    selected_features = ["Throughput", "ResponseTime"]
     batch_size = 32
     num_epochs = 50
     patience = 5
@@ -577,8 +577,53 @@ if __name__ == "__main__":
     print("Test Metrics:", metrics)
     
     # Visualize attention weights
-    sample_data, _ = next(iter(test_loader))
-    sample_data = sample_data.to(device)
+
+    # testset의 첫 번째 배치 데이터로 시각화
+    # sample_data, _ = next(iter(test_loader))
+    # sample_data = sample_data.to(device)
+
+    # experiment.visualize_attention(
+    #     sample_data,
+    #     node_names,
+    #     feature_names,
+    #     layer_idx=0,
+    #     test_dataset=test_dataset)
+
+
+    # 특정 데이터에 대한 어텐션 맵 시각화
+    def find_data_by_date(dataset, target_date):
+        """
+        주어진 날짜에 해당하는 데이터의 인덱스를 찾는 함수
+        
+        Args:
+            dataset: PerformanceDataset 객체
+            target_date: 찾고자 하는 날짜 (str 또는 datetime 형식)
+
+        Returns:
+            해당 날짜에 해당하는 데이터의 인덱스
+
+        """
+        if isinstance(target_date, str):
+            target_date = pd.to_datetime(target_date)
+
+        idx = np.where(dataset.indices == target_date)[0][0]
+        # # dataset.indices에서 target_date와 가장 가까운 날짜 찾기
+        # idx = np.argmin(abs(dataset.indices - target_date))
+
+        return idx
+
+    # 원하는 날짜 지정
+    target_date = "2024-08-03 21:09:00" # 확인하고 싶은 날짜로 변경하기
+    data_idx = find_data_by_date(test_dataset, target_date)
+    sample_data = test_dataset[data_idx][0].unsqueeze(0).to(device)
+
+    experiment.visualize_attention(
+        sample_data,
+        node_names,
+        feature_names,
+        layer_idx=0,
+        test_dataset=test_dataset)
+
     # num_layers = len(model.encoder_layers) # 전체 레이어에 대한 어텐션 맵 시각화
     # for i in range(num_layers):
     #     experiment.visualize_attention(
@@ -587,10 +632,3 @@ if __name__ == "__main__":
     #         feature_names,
     #         layer_idx=i,
     #         test_dataset=test_dataset)
-
-    experiment.visualize_attention(
-        sample_data,
-        node_names,
-        feature_names,
-        layer_idx=0,
-        test_dataset=test_dataset)
