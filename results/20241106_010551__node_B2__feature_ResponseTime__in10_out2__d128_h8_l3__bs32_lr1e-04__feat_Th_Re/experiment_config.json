@@ -1,0 +1,19 @@
+{
+    "file_path": "./preprocessed_data_slotted/89/merged_df.csv",
+    "input_timesteps": 10,
+    "forecast_horizon": 2,
+    "target_node": "B2",
+    "target_feature": "ResponseTime",
+    "selected_features": [
+        "Throughput",
+        "ResponseTime"
+    ],
+    "batch_size": 32,
+    "num_epochs": 50,
+    "patience": 5,
+    "learning_rate": 0.0001,
+    "d_model": 128,
+    "nhead": 8,
+    "num_layers": 3,
+    "dropout": 0.1
+}

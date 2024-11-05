@@ -225,7 +225,8 @@ class ExperimentManager:
                  optimizer: torch.optim.Optimizer,
                  criterion: nn.Module,
                  device: torch.device,
-                 save_dir: str = "results"):
+                 experiment_config: dict,
+                 base_save_dir: str = "results"):
         self.model = model
         self.train_loader = train_loader
         self.val_loader = val_loader
@@ -233,13 +234,50 @@ class ExperimentManager:
         self.optimizer = optimizer
         self.criterion = criterion
         self.device = device
-        self.save_dir = Path(save_dir)
+        self.experiment_config = experiment_config
+        
+        # Create a descriptive folder name based on experiment configuration
+        folder_name = self._create_experiment_folder_name()
+        self.save_dir = Path(base_save_dir) / folder_name
         self.save_dir.mkdir(parents=True, exist_ok=True)
+        
+        # Save experiment configuration
+        self._save_experiment_config()
         
         self.best_val_loss = float('inf')
         self.train_losses = []
         self.val_losses = []
+    
+    def _create_experiment_folder_name(self) -> str:
+        """Create a descriptive folder name based on experiment configuration"""
+        config = self.experiment_config
+        # Format timestamp
+        timestamp = pd.Timestamp.now().strftime("%Y%m%d_%H%M%S")
         
+        # Create folder name components
+        components = [
+            timestamp,
+            f"node_{config['target_node']}",
+            f"feature_{config['target_feature']}",
+            f"in{config['input_timesteps']}_out{config['forecast_horizon']}",
+            f"d{config['d_model']}_h{config['nhead']}_l{config['num_layers']}",
+            f"bs{config['batch_size']}_lr{config['learning_rate']:.0e}"
+        ]
+        
+        # Add selected features if specified
+        if config.get('selected_features'):
+            features_str = '_'.join(f[:2] for f in config['selected_features'])
+            components.append(f"feat_{features_str}")
+        
+        return "__".join(components)
+    
+    def _save_experiment_config(self):
+        """Save experiment configuration as JSON"""
+        config_path = self.save_dir / "experiment_config.json"
+        with open(config_path, 'w') as f:
+            json.dump(self.experiment_config, f, indent=4, default=str)
+    
+    # Rest of the ExperimentManager methods remain the same
     def train_epoch(self) -> float:
         self.model.train()
         total_loss = 0
@@ -278,7 +316,6 @@ class ExperimentManager:
         early_stopping_counter = 0
         
         for epoch in range(num_epochs):
-            
             train_loss = self.train_epoch()
             val_loss = self.validate()
 
@@ -316,40 +353,23 @@ class ExperimentManager:
         all_preds = np.array(all_preds)
         all_targets = np.array(all_targets)
         
-        return calculate_metrics(all_targets, all_preds)
+        # Save test metrics
+        metrics = calculate_metrics(all_targets, all_preds)
+        metrics_path = self.save_dir / "test_metrics.json"
+        with open(metrics_path, 'w') as f:
+            json.dump(metrics, f, indent=4)
+            
+        return metrics
     
     def save_checkpoint(self, filename: str):
         checkpoint = {
             'model_state_dict': self.model.state_dict(),
             'optimizer_state_dict': self.optimizer.state_dict(),
-            'best_val_loss': self.best_val_loss
+            'best_val_loss': self.best_val_loss,
+            'experiment_config': self.experiment_config
         }
         torch.save(checkpoint, self.save_dir / filename)
 
-    def _get_unique_filename(self, base_path: Path) -> Path:
-        """
-        같은 이름의 파일이 있을 경우 번호를 붙여서 unique한 파일명 생성
-        
-        Args:
-            base_path: 원본 파일 경로 (Path 객체)
-            
-        Returns:
-            unique한 파일 경로 (Path 객체)
-        """
-        if not base_path.exists():
-            return base_path
-            
-        directory = base_path.parent
-        name = base_path.stem
-        extension = base_path.suffix
-        counter = 1
-        
-        while True:
-            new_path = directory / f"{name}_{counter}{extension}"
-            if not new_path.exists():
-                return new_path
-            counter += 1
-    
     def plot_training_history(self):
         plt.figure(figsize=(10, 6))
         plt.plot(self.train_losses, label='Training Loss')
@@ -358,52 +378,36 @@ class ExperimentManager:
         plt.ylabel('Loss')
         plt.title('Training History')
         plt.legend()
-
-        # 유니크한 파일명으로 저장
-        save_path = self._get_unique_filename(self.save_dir / 'training_history.png')
-        plt.savefig(save_path)
-        # plt.savefig(self.save_dir / 'training_history.png')
-        plt.show()
+        
+        plt.savefig(self.save_dir / 'training_history.png')
         plt.close()
         
     def visualize_attention(self, 
-                            sample_data: torch.Tensor,
-                            node_names: List[str],
-                            feature_names: List[str],
-                            layer_idx: int = 0,
-                            test_dataset = None): # 추가: test_dataset 인자 추가
-        """특정 레이어의 어텐션 맵 시각화"""
+                         sample_data: torch.Tensor,
+                         node_names: List[str],
+                         feature_names: List[str],
+                         layer_idx: int = 0,
+                         test_dataset = None):
         self.model.eval()
         attention_weights = self.model.get_attention_weights(sample_data)
         
-        # # 현재 시각화하는 데이터의 인덱스 찾기
-        # batch_idx = 0 # 첫 번째 배치의
-        # data_idx = 0 # 첫 번째 데이터의
-        # original_index = test_dataset.indices[batch_idx * test_dataset.batch_size + data_idx] # 원본 데이터의 인덱스
-        # print(f"Original index: {original_index}")
-        
         if not attention_weights or layer_idx >= len(attention_weights):
             print(f"Attention weights not available for layer {layer_idx}")
-            return  # Skip visualization if no weights
+            return
 
-        # 레이어의 어텐션 가중치 선택
-        layer_attention = attention_weights[layer_idx][0]  # first batch
+        layer_attention = attention_weights[layer_idx][0]
         
-        # 데이터 구조에 맞게 reshape
         num_timesteps = self.model.input_timesteps
         num_nodes = self.model.num_nodes
         num_features = self.model.num_features
         
-        # 전체 레이블 생성
         labels = []
         for t in range(num_timesteps):
             for n in node_names:
                 for f in feature_names:
                     labels.append(f"t{t+1}_{n}_{f}")
         
-        # Attention weights have shape (seq_len, seq_len), adjust labels accordingly
         plt.figure(figsize=(20, 16))
-        # Detach the tensor before converting to NumPy array
         sns.heatmap(layer_attention.detach().cpu().numpy(), 
               xticklabels=labels,
               yticklabels=labels,
@@ -413,11 +417,7 @@ class ExperimentManager:
         plt.title(f'Attention Weights (Layer {layer_idx+1})')
         plt.tight_layout()
         
-        # 유니크한 파일명으로 저장
-        save_path = self._get_unique_filename(self.save_dir / f'attention_map_layer_{layer_idx+1}.png')
-        plt.savefig(save_path)
-        # plt.savefig(self.save_dir / f'attention_map_layer_{layer_idx+1}.png')
-        plt.show()
+        plt.savefig(self.save_dir / f'attention_map_layer_{layer_idx+1}.png')
         plt.close()
 
 def calculate_metrics(y_true, y_pred):
@@ -427,14 +427,17 @@ def calculate_metrics(y_true, y_pred):
     Args:
         y_true: shape (N, forecast_horizon)
         y_pred: shape (N, forecast_horizon)
+
+    Returns:
+        metrics: Dict with float values (not numpy types)
     """
     metrics = {
-        'mse': mean_squared_error(y_true, y_pred),
-        'rmse': np.sqrt(mean_squared_error(y_true, y_pred)),
-        'mae': mean_absolute_error(y_true, y_pred),
+        'mse': float(mean_squared_error(y_true, y_pred)),
+        'rmse': float(np.sqrt(mean_squared_error(y_true, y_pred))),
+        'mae': float(mean_absolute_error(y_true, y_pred)),
         # 각 시점별 메트릭
         'step_rmse': [
-            np.sqrt(mean_squared_error(y_true[:, i], y_pred[:, i]))
+            float(np.sqrt(mean_squared_error(y_true[:, i], y_pred[:, i])))
             for i in range(y_true.shape[1])
         ]
     }
@@ -507,54 +510,54 @@ def prepare_data(file_path, input_timesteps, forecast_horizon, target_node, targ
     
     return train_dataset, val_dataset, test_dataset, scaler_X, scaler_y, node_names, feature_names
 
-# Example usage (you need to provide actual file paths and adjust parameters accordingly)
 if __name__ == "__main__":
     # Parameters
-    # file_path = baseurl + "/m"
-    file_path= './preprocessed_data_slotted/89/merged_df.csv'
-    input_timesteps = 10
-    forecast_horizon = 2
-    target_node = "B2"
-    target_feature = "ResponseTime"
-    selected_features = ["Throughput", "ResponseTime"]
-    batch_size = 32
-    num_epochs = 50
-    patience = 5
-    learning_rate = 1e-4
-    d_model = 128
-    nhead = 8
-    num_layers = 3
-    dropout = 0.1
+    experiment_config = {
+        'file_path': './preprocessed_data_slotted/89/merged_df.csv',
+        'input_timesteps': 10,
+        'forecast_horizon': 2,
+        'target_node': "B2",
+        'target_feature': "ResponseTime",
+        'selected_features': ["Throughput", "ResponseTime"],
+        'batch_size': 32,
+        'num_epochs': 50,
+        'patience': 5,
+        'learning_rate': 1e-4,
+        'd_model': 128,
+        'nhead': 8,
+        'num_layers': 3,
+        'dropout': 0.1
+    }
     
     # Prepare data
     train_dataset, val_dataset, test_dataset, scaler_X, scaler_y, node_names, feature_names = prepare_data(
-        file_path,
-        input_timesteps,
-        forecast_horizon,
-        target_node,
-        target_feature,
-        selected_features,
-        batch_size=batch_size
+        experiment_config['file_path'],
+        experiment_config['input_timesteps'],
+        experiment_config['forecast_horizon'],
+        experiment_config['target_node'],
+        experiment_config['target_feature'],
+        experiment_config['selected_features'],
+        batch_size=experiment_config['batch_size']
     )
     
-    train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True)
-    val_loader = DataLoader(val_dataset, batch_size=batch_size)
-    test_loader = DataLoader(test_dataset, batch_size=batch_size)
+    train_loader = DataLoader(train_dataset, batch_size=experiment_config['batch_size'], shuffle=True)
+    val_loader = DataLoader(val_dataset, batch_size=experiment_config['batch_size'])
+    test_loader = DataLoader(test_dataset, batch_size=experiment_config['batch_size'])
     
     # Initialize model, optimizer, and loss function
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     model = SpatioTemporalTransformer(
         num_nodes=train_dataset.num_nodes,
         num_features=train_dataset.num_features,
-        input_timesteps=input_timesteps,
-        forecast_horizon=forecast_horizon,
-        d_model=d_model,
-        nhead=nhead,
-        num_layers=num_layers,
-        dropout=dropout
+        input_timesteps=experiment_config['input_timesteps'],
+        forecast_horizon=experiment_config['forecast_horizon'],
+        d_model=experiment_config['d_model'],
+        nhead=experiment_config['nhead'],
+        num_layers=experiment_config['num_layers'],
+        dropout=experiment_config['dropout']
     ).to(device)
     
-    optimizer = torch.optim.Adam(model.parameters(), lr=learning_rate)
+    optimizer = torch.optim.Adam(model.parameters(), lr=experiment_config['learning_rate'])
     criterion = nn.MSELoss()
     
     # Initialize experiment manager
@@ -566,11 +569,13 @@ if __name__ == "__main__":
         optimizer=optimizer,
         criterion=criterion,
         device=device,
-        save_dir="results"
+        experiment_config=experiment_config,
+        base_save_dir="results"
     )
     
     # Train the model
-    experiment.train(num_epochs=num_epochs, patience=patience)
+    experiment.train(num_epochs=experiment_config['num_epochs'], 
+                    patience=experiment_config['patience'])
     
     # Test the model
     metrics = experiment.test()
@@ -581,14 +586,6 @@ if __name__ == "__main__":
     # testset의 첫 번째 배치 데이터로 시각화
     # sample_data, _ = next(iter(test_loader))
     # sample_data = sample_data.to(device)
-
-    # experiment.visualize_attention(
-    #     sample_data,
-    #     node_names,
-    #     feature_names,
-    #     layer_idx=0,
-    #     test_dataset=test_dataset)
-
 
     # 특정 데이터에 대한 어텐션 맵 시각화
     def find_data_by_date(dataset, target_date):
@@ -611,24 +608,18 @@ if __name__ == "__main__":
         # idx = np.argmin(abs(dataset.indices - target_date))
 
         return idx
-
-    # 원하는 날짜 지정
-    target_date = "2024-08-03 21:09:00" # 확인하고 싶은 날짜로 변경하기
+        
+    # Visualize attention weights for a specific date
+    target_date = "2024-08-03 21:09:00"  # 원하는 날짜 지정
     data_idx = find_data_by_date(test_dataset, target_date)
     sample_data = test_dataset[data_idx][0].unsqueeze(0).to(device)
 
-    experiment.visualize_attention(
-        sample_data,
-        node_names,
-        feature_names,
-        layer_idx=0,
-        test_dataset=test_dataset)
-
-    # num_layers = len(model.encoder_layers) # 전체 레이어에 대한 어텐션 맵 시각화
-    # for i in range(num_layers):
-    #     experiment.visualize_attention(
-    #         sample_data,
-    #         node_names,
-    #         feature_names,
-    #         layer_idx=i,
-    #         test_dataset=test_dataset)
+    # 전체 레이어에 대한 어텐션 맵 시각화
+    num_layers = len(model.encoder_layers)
+    for i in range(num_layers):
+        experiment.visualize_attention(
+            sample_data,
+            node_names,
+            feature_names,
+            layer_idx=i,
+            test_dataset=test_dataset)
