@@ -640,5 +640,5 @@ if __name__ == "__main__":
             feature_names,
             layer_idx=i,
             test_dataset=test_dataset,
-            timestamp=actual_date  # 실제 사용된 날짜 전달
+            timestamp=actual_date  # 실제 사용된 날짜
         )
