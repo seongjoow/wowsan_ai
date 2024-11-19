@@ -11,6 +11,10 @@ import logging
 from typing import List, Tuple, Dict
 import json
 from pathlib import Path
+from itertools import product
+from collections import defaultdict
+import csv
+import gc
 
 print(torch.__version__)
 
@@ -554,59 +558,154 @@ def prepare_data(file_path, input_timesteps, forecast_horizon, target_node, targ
     
     return train_dataset, val_dataset, test_dataset, scaler_X, scaler_y, node_names, feature_names
 
+
 if __name__ == "__main__":
     from utils import find_data_by_date
 
-    # Parameters
-    experiment_config = {
+    # 기본 설정 값을 포함한 base_config 정의
+    base_config = {
         'file_path': './preprocessed_data_sttransformer/176/merged_df.csv',
         'input_timesteps': 10,
         'forecast_horizon': 2,
         'target_node': "B2",
         'target_feature': "ResponseTime",
         'selected_features': ["Throughput", "ResponseTime"],
-        'batch_size': 32,
-        'num_epochs': 100,
-        'patience': 10,
-        'learning_rate': 1e-3,
-        'd_model': 128,
-        'nhead': 8,
-        'num_layers': 3,
-        'dropout': 0.1
+        'num_epochs': 100
     }
-    
-    # Prepare data
+
+    # 그리드 서치를 위한 파라미터 정의
+    grid_params = {
+        'batch_size': [32, 64, 128],
+        'patience': [5, 10, 15],
+        'learning_rate': [1e-3, 1e-4, 1e-5],
+        'd_model': [64, 128, 256],
+        'nhead': [4, 8, 16],
+        'num_layers': [2, 3, 4],
+        'dropout': [0.1, 0.2, 0.3]
+    }
+
+    # 그리드 서치
+    all_params = [dict(zip(grid_params.keys(), values)) for values in product(*grid_params.values())]
+
+    all_metrics = defaultdict(list)
+    best_val_loss = float('inf')
+    best_params = None
+
+    num_trials = 15  # 각 조합에 대해 3회 실험
+
+    for params in all_params:
+        param_val_losses = []
+        for _ in range(num_trials):
+            # 실험 설정 업데이트 - base_config를 복사한 후 현재 파라미터 적용
+            current_config = base_config.copy()
+            current_config.update(params)
+
+            # 데이터 준비 및 모델 초기화
+            train_dataset, val_dataset, test_dataset, scaler_X, scaler_y, node_names, feature_names = prepare_data(
+                current_config['file_path'],
+                current_config['input_timesteps'],
+                current_config['forecast_horizon'],
+                current_config['target_node'],
+                current_config['target_feature'],
+                current_config['selected_features'],
+                batch_size=current_config['batch_size']
+            )
+
+            # 나머지 코드는 동일하되, experiment_config 대신 current_config 사용
+            train_loader = DataLoader(train_dataset, batch_size=current_config['batch_size'], shuffle=True)
+            val_loader = DataLoader(val_dataset, batch_size=current_config['batch_size'])
+            test_loader = DataLoader(test_dataset, batch_size=current_config['batch_size'])
+
+            device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+            model = SpatioTemporalTransformer(
+                num_nodes=train_dataset.num_nodes,
+                num_features=train_dataset.num_features,
+                input_timesteps=current_config['input_timesteps'],
+                forecast_horizon=current_config['forecast_horizon'],
+                d_model=current_config['d_model'],
+                nhead=current_config['nhead'],
+                num_layers=current_config['num_layers'],
+                dropout=current_config['dropout']
+            ).to(device)
+
+            optimizer = torch.optim.Adam(model.parameters(), lr=current_config['learning_rate'])
+            criterion = nn.MSELoss()
+
+            experiment = ExperimentManager(
+                model=model,
+                train_loader=train_loader,
+                val_loader=val_loader,
+                test_loader=test_loader,
+                optimizer=optimizer,
+                criterion=criterion,
+                device=device,
+                experiment_config=current_config,
+                base_save_dir="results"
+            )
+
+            # 모델 학습 및 검증
+            experiment.train(num_epochs=current_config['num_epochs'], 
+                            patience=current_config['patience'])
+            param_val_losses.append(experiment.best_val_loss)
+
+        # ... (이전 그리드 서치 코드에 이어서)
+        
+        avg_val_loss = sum(param_val_losses) / num_trials
+        for k, v in experiment.test().items():
+            all_metrics[k].append(v)
+
+        if avg_val_loss < best_val_loss:
+            best_val_loss = avg_val_loss
+            best_params = params.copy()
+
+        print(f"Experiment with {params} - Avg Val Loss: {avg_val_loss:.4f}")
+
+    print("Best hyperparameters:", best_params)
+
+    # 실험 결과를 CSV 파일로 저장
+    csv_filename = "experiment_results.csv"
+    with open(csv_filename, "w", newline="") as csvfile:
+        writer = csv.writer(csvfile)
+        writer.writerow(["Metric"] + [f"Trial {i+1}" for i in range(len(all_params) * num_trials)])
+        for metric, values in all_metrics.items():
+            writer.writerow([metric] + [f"{v:.4f}" for v in values])
+
+    print(f"Experiment results saved to: {csv_filename}")
+
+    # 최적 파라미터로 최종 테스트 수행
+    final_config = base_config.copy()
+    final_config.update(best_params)
+
+    # 최종 테스트를 위한 데이터 준비
     train_dataset, val_dataset, test_dataset, scaler_X, scaler_y, node_names, feature_names = prepare_data(
-        experiment_config['file_path'],
-        experiment_config['input_timesteps'],
-        experiment_config['forecast_horizon'],
-        experiment_config['target_node'],
-        experiment_config['target_feature'],
-        experiment_config['selected_features'],
-        batch_size=experiment_config['batch_size']
+        final_config['file_path'],
+        final_config['input_timesteps'],
+        final_config['forecast_horizon'],
+        final_config['target_node'],
+        final_config['target_feature'],
+        final_config['selected_features'],
+        batch_size=final_config['batch_size']
     )
-    
-    train_loader = DataLoader(train_dataset, batch_size=experiment_config['batch_size'], shuffle=True)
-    val_loader = DataLoader(val_dataset, batch_size=experiment_config['batch_size'])
-    test_loader = DataLoader(test_dataset, batch_size=experiment_config['batch_size'])
-    
-    # Initialize model, optimizer, and loss function
+
+    train_loader = DataLoader(train_dataset, batch_size=final_config['batch_size'], shuffle=True)
+    val_loader = DataLoader(val_dataset, batch_size=final_config['batch_size'])
+    test_loader = DataLoader(test_dataset, batch_size=final_config['batch_size'])
+
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     model = SpatioTemporalTransformer(
         num_nodes=train_dataset.num_nodes,
         num_features=train_dataset.num_features,
-        input_timesteps=experiment_config['input_timesteps'],
-        forecast_horizon=experiment_config['forecast_horizon'],
-        d_model=experiment_config['d_model'],
-        nhead=experiment_config['nhead'],
-        num_layers=experiment_config['num_layers'],
-        dropout=experiment_config['dropout']
+        input_timesteps=final_config['input_timesteps'],
+        forecast_horizon=final_config['forecast_horizon'],
+        d_model=final_config['d_model'],
+        nhead=final_config['nhead'],
+        num_layers=final_config['num_layers'],
+        dropout=final_config['dropout']
     ).to(device)
-    
-    optimizer = torch.optim.Adam(model.parameters(), lr=experiment_config['learning_rate'])
+
+    optimizer = torch.optim.Adam(model.parameters(), lr=final_config['learning_rate'])
     criterion = nn.MSELoss()
-    
-    # Initialize experiment manager
+
     experiment = ExperimentManager(
         model=model,
         train_loader=train_loader,
@@ -615,31 +714,19 @@ if __name__ == "__main__":
         optimizer=optimizer,
         criterion=criterion,
         device=device,
-        experiment_config=experiment_config,
+        experiment_config=final_config,
         base_save_dir="results"
     )
-    
-    # Train the model
-    experiment.train(num_epochs=experiment_config['num_epochs'], 
-                    patience=experiment_config['patience'])
-    
-    # Test the model
+
     metrics = experiment.test()
     print("Test Metrics:", metrics)
     
-    # Visualize attention weights
-
-    # testset의 첫 번째 배치 데이터로 시각화
-    # sample_data, _ = next(iter(test_loader))
-    # sample_data = sample_data.to(device)
-
-    # 특정 데이터에 대한 어텐션 맵 시각화
-    # Visualize attention weights for a specific date
+    # 어텐션 가중치 시각화
     target_date = "2024-11-10 20:04:30"  # 원하는 날짜 지정
     data_idx = find_data_by_date(test_dataset, target_date)
     sample_data = test_dataset[data_idx][0].unsqueeze(0).to(device)
 
-    # 실제 사용된 날짜 (정확한 날짜가 없는 경우 가장 가까운 날짜가 사용됨)
+    # 실제 사용된 날짜
     actual_date = test_dataset.indices[data_idx]
 
     # 전체 레이어에 대한 어텐션 맵 시각화
@@ -651,5 +738,12 @@ if __name__ == "__main__":
             feature_names,
             layer_idx=i,
             test_dataset=test_dataset,
-            timestamp=actual_date  # 실제 사용된 날짜
+            timestamp=actual_date
         )
+
+    # 메모리 및 파일 정리
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
+
+    del model, optimizer, criterion
+    gc.collect()
