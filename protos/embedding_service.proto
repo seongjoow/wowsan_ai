@@ -31,6 +31,7 @@ message TickLog {
     float ResponseTime = 6;
     float InterArrivalTime = 7;
     float Throughput = 8;
+    string Time = 9;
 }
 
 message HopLog {
@@ -51,6 +52,7 @@ message PerformanceInfo {
     double InterArrivalTime = 8;
     double Throughput = 9;
     string Timestamp = 10;
+    string Time = 11;
 }
 
 message SendProssessLogRequest {

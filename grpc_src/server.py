@@ -105,8 +105,50 @@ def call_model(broker_address: str) -> embedding_service_pb2.Tensor:
 
 class EmbeddingServiceServicer(embedding_service_pb2_grpc.EmbeddingServiceServicer):
     def __init__(self):
+
+        experiment_config = {
+            'file_path': './preprocessed_data_sttransformer/176/merged_df.csv',
+            'input_timesteps': 10,
+            'forecast_horizon': 2,
+            'target_node': "B2",
+            'target_feature': "ResponseTime",
+            'selected_features': ["Throughput", "ResponseTime"],
+            'batch_size': 32,
+            'num_epochs': 100,
+            'patience': 10,
+            'learning_rate': 1e-3,
+            'd_model': 128,
+            'nhead': 8,
+            'num_layers': 3,
+            'dropout': 0.1
+        }
+        # Prepare data
+        train_dataset, val_dataset, test_dataset, scaler_X, scaler_y, node_names, feature_names = prepare_data(
+            experiment_config['file_path'],
+            experiment_config['input_timesteps'],
+            experiment_config['forecast_horizon'],
+            experiment_config['target_node'],
+            experiment_config['target_feature'],
+            experiment_config['selected_features'],
+            batch_size=experiment_config['batch_size']
+        )
+
+        train_loader = DataLoader(train_dataset, batch_size=experiment_config['batch_size'], shuffle=True)
+        val_loader = DataLoader(val_dataset, batch_size=experiment_config['batch_size'])
+        test_loader = DataLoader(test_dataset, batch_size=experiment_config['batch_size'])
+
         device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-        model = ""  # 학습된 
+        model = SpatioTemporalTransformer(
+            num_nodes=train_dataset.num_nodes,
+            num_features=train_dataset.num_features,
+            input_timesteps=experiment_config['input_timesteps'],
+            forecast_horizon=experiment_config['forecast_horizon'],
+            d_model=experiment_config['d_model'],
+            nhead=experiment_config['nhead'],
+            num_layers=experiment_config['num_layers'],
+            dropout=experiment_config['dropout']
+            ).to(device)
+        
         self.realtime_node_embedding_processor = RealtimeNodeEmbeddingProcessor(
             model=model,
             device=device,
@@ -130,7 +172,9 @@ class EmbeddingServiceServicer(embedding_service_pb2_grpc.EmbeddingServiceServic
                 "InterArrivalTime": tick_proto_request.InterArrivalTime,
                 "QueueLength": tick_proto_request.QueueLength,
                 "QueueTime": tick_proto_request.QueueTime,
-                "ServiceTime": tick_proto_request.ServiceTime
+                "ServiceTime": tick_proto_request.ServiceTime,
+                "Timestamp": tick_proto_request.Time,
+                "time": tick_proto_request.Time
             }
         
         def performance_info_to_dict(performance_info: embedding_service_pb2.PerformanceInfo) -> dict:
@@ -143,7 +187,8 @@ class EmbeddingServiceServicer(embedding_service_pb2_grpc.EmbeddingServiceServic
                 "ResponseTime": performance_info.ResponseTime,
                 "ServiceTime": performance_info.ServiceTime,
                 "Throughput": performance_info.Throughput,
-                "Timestamp": performance_info.Timestamp
+                "Timestamp": performance_info.Timestamp,
+                "time": performance_info.Time,
             }
         
         def hop_proto_request_to_dict(hop_proto_request: embedding_service_pb2.HopLog) -> dict:
@@ -157,12 +202,12 @@ class EmbeddingServiceServicer(embedding_service_pb2_grpc.EmbeddingServiceServic
             }
         if request.type == "HopLog":
             self.realtime_node_embedding_processor.add_message(
-                timestamp=datetime.now(), 
+                timestamp=datetime.now().replace(microsecond=0),
                 hop_log=hop_proto_request_to_dict(request.HopLog)
             )
         elif request.type == "TickLog":
             self.realtime_node_embedding_processor.add_message(
-                timestamp=datetime.now(), 
+                timestamp=datetime.now().replace(microsecond=0), 
                 tick_log=tick_proto_request_to_dict(request.TickLog)
             )
         else:

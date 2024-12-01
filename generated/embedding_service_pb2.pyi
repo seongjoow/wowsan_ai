@@ -76,6 +76,7 @@ class TickLog(google.protobuf.message.Message):
     RESPONSETIME_FIELD_NUMBER: builtins.int
     INTERARRIVALTIME_FIELD_NUMBER: builtins.int
     THROUGHPUT_FIELD_NUMBER: builtins.int
+    TIME_FIELD_NUMBER: builtins.int
     Cpu: builtins.float
     Memory: builtins.float
     QueueLength: builtins.float
@@ -84,6 +85,7 @@ class TickLog(google.protobuf.message.Message):
     ResponseTime: builtins.float
     InterArrivalTime: builtins.float
     Throughput: builtins.float
+    Time: builtins.str
     def __init__(
         self,
         *,
@@ -95,8 +97,9 @@ class TickLog(google.protobuf.message.Message):
         ResponseTime: builtins.float = ...,
         InterArrivalTime: builtins.float = ...,
         Throughput: builtins.float = ...,
+        Time: builtins.str = ...,
     ) -> None: ...
-    def ClearField(self, field_name: typing.Literal["Cpu", b"Cpu", "InterArrivalTime", b"InterArrivalTime", "Memory", b"Memory", "QueueLength", b"QueueLength", "QueueTime", b"QueueTime", "ResponseTime", b"ResponseTime", "ServiceTime", b"ServiceTime", "Throughput", b"Throughput"]) -> None: ...
+    def ClearField(self, field_name: typing.Literal["Cpu", b"Cpu", "InterArrivalTime", b"InterArrivalTime", "Memory", b"Memory", "QueueLength", b"QueueLength", "QueueTime", b"QueueTime", "ResponseTime", b"ResponseTime", "ServiceTime", b"ServiceTime", "Throughput", b"Throughput", "Time", b"Time"]) -> None: ...
 
 global___TickLog = TickLog
 
@@ -139,6 +142,7 @@ class PerformanceInfo(google.protobuf.message.Message):
     INTERARRIVALTIME_FIELD_NUMBER: builtins.int
     THROUGHPUT_FIELD_NUMBER: builtins.int
     TIMESTAMP_FIELD_NUMBER: builtins.int
+    TIME_FIELD_NUMBER: builtins.int
     BrokerId: builtins.str
     Cpu: builtins.float
     Memory: builtins.int
@@ -149,6 +153,7 @@ class PerformanceInfo(google.protobuf.message.Message):
     InterArrivalTime: builtins.float
     Throughput: builtins.float
     Timestamp: builtins.str
+    Time: builtins.str
     def __init__(
         self,
         *,
@@ -162,8 +167,9 @@ class PerformanceInfo(google.protobuf.message.Message):
         InterArrivalTime: builtins.float = ...,
         Throughput: builtins.float = ...,
         Timestamp: builtins.str = ...,
+        Time: builtins.str = ...,
     ) -> None: ...
-    def ClearField(self, field_name: typing.Literal["BrokerId", b"BrokerId", "Cpu", b"Cpu", "InterArrivalTime", b"InterArrivalTime", "Memory", b"Memory", "QueueLength", b"QueueLength", "QueueTime", b"QueueTime", "ResponseTime", b"ResponseTime", "ServiceTime", b"ServiceTime", "Throughput", b"Throughput", "Timestamp", b"Timestamp"]) -> None: ...
+    def ClearField(self, field_name: typing.Literal["BrokerId", b"BrokerId", "Cpu", b"Cpu", "InterArrivalTime", b"InterArrivalTime", "Memory", b"Memory", "QueueLength", b"QueueLength", "QueueTime", b"QueueTime", "ResponseTime", b"ResponseTime", "ServiceTime", b"ServiceTime", "Throughput", b"Throughput", "Time", b"Time", "Timestamp", b"Timestamp"]) -> None: ...
 
 global___PerformanceInfo = PerformanceInfo
 

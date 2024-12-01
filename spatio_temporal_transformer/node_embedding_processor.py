@@ -90,14 +90,28 @@ class RealtimeNodeEmbeddingProcessor:
         while self.is_running:
             try:
                 if self.message_queue.empty():
+                    # logger.info("Message queue is empty")
                     continue
-                timestamp, hop_log, tick_log = self.message_queue.get(timeout=1.0)
+                try:
+                    timestamp, hop_log, tick_log = self.message_queue.get(block=False)
+                except Exception as e:
+                    logger.error(f"Error getting message: {e}")
+                    continue
                 with self.data_lock:
                     # 로그 저장
-                    if hop_log:
-                        self.hop_logs[timestamp].append(hop_log)
-                    if tick_log:
-                        self.tick_logs[timestamp].append(tick_log)
+                    try:
+                        if hop_log:
+                            if self.hop_logs.get(timestamp) is None:
+                                self.hop_logs[timestamp] = [hop_log]
+                            else:
+                                self.hop_logs[timestamp].append(hop_log)
+                        if tick_log:
+                            if self.tick_logs.get(timestamp) is None:
+                                self.tick_logs[timestamp] = [tick_log]
+                            else:
+                                self.tick_logs[timestamp].append(tick_log)
+                    except Exception as e:
+                        logger.error(f"Error saving log: {e}")
                     
                     # 오래된 데이터 제거
                     cutoff_time = timestamp - self.time_window
@@ -113,8 +127,10 @@ class RealtimeNodeEmbeddingProcessor:
                             embeddings = self.get_node_embedding(model_input)
                             if embeddings is not None:
                                 self.embedding_queue.put(embeddings)
-                
-                self.message_queue.task_done()
+                try:
+                    self.message_queue.task_done()
+                except Exception as e:
+                    logger.error(f"Error marking message as done: {e}")
                 continue
             except Exception as e:
                 logger.error(f"Error processing message: {e}")
@@ -122,10 +138,13 @@ class RealtimeNodeEmbeddingProcessor:
 
     def _cleanup_old_data(self, cutoff_time: datetime):
         """오래된 로그 제거"""
-        self.tick_logs = {t: logs for t, logs in self.tick_logs.items() 
-                         if t >= cutoff_time}
-        self.hop_logs = {t: logs for t, logs in self.hop_logs.items() 
-                        if t >= cutoff_time}
+        try:
+            self.tick_logs = {t: logs for t, logs in self.tick_logs.items() 
+                             if t >= cutoff_time}
+            self.hop_logs = {t: logs for t, logs in self.hop_logs.items() 
+                            if t >= cutoff_time}
+        except Exception as e:
+            logger.error(f"Error cleaning up old data: {e}")
 
 
     def _create_time_series_data(self, current_time: datetime) -> Optional[pd.DataFrame]:
@@ -151,7 +170,7 @@ class RealtimeNodeEmbeddingProcessor:
             # 3. 누락된 tick log 시간 확인
             missing_times = expected_times - tick_times
             if missing_times:
-                logger.warning(f"Missing tick logs at: {missing_times}")
+                logger.warning(f"Missing tick logs at: {missing_times} times count: {len(missing_times)}")
                 
                 # tick log가 2초 이상 연속으로 누락되었는지 확인
                 consecutive_missing = 0
@@ -165,6 +184,7 @@ class RealtimeNodeEmbeddingProcessor:
                         consecutive_missing = 0
             
             # 4. 데이터 처리 (기존 로직)
+            logger.info(f"4. 데이터 처리 (기존 로직)")
             processed_data = []
             for timestamp in sorted(tick_times | hop_times):
                 if start_time <= timestamp <= current_time:
@@ -186,10 +206,12 @@ class RealtimeNodeEmbeddingProcessor:
                 return None
             
             # 5. 데이터 병합 및 중복 처리 (기존 로직)
+            logger.info(f"5. 데이터 병합 및 중복 처리 (기존 로직)")
             df = pd.concat(processed_data, ignore_index=True)
             df = self._handle_duplicate_times(df)
             
             # 6. 누락된 시간에 대한 처리
+            logger.info(f"6. 누락된 시간에 대한 처리")
             if missing_times:
                 df.set_index('time', inplace=True)
                 df = df.sort_index()
@@ -270,11 +292,11 @@ class RealtimeNodeEmbeddingProcessor:
             'ServiceTime': f'B{broker_index}_ServiceTime',
             'ResponseTime': f'B{broker_index}_ResponseTime',
             'InterArrivalTime': f'B{broker_index}_InterArrivalTime',
-            'Throughput': f'B{broker_index}_Throughput'
+            'Throughput': f'B{broker_index}_Throughput',
         }
         
         tick_df = tick_df.rename(columns=tick_columns_mapping)
-        return tick_df.merge(hop_df, on='time', how='left', suffixes=('', '_hop'))
+        return tick_df.merge(hop_df, on='Timestamp', how='left', suffixes=('', '_hop'))
 
     def _handle_duplicate_times(self, df: pd.DataFrame) -> pd.DataFrame:
         """기존 중복 처리 코드"""
