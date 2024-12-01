@@ -1,0 +1,10 @@
+grpcio
+protobuf
+grpcio-tools
+mypy-protobuf
+numpy
+torch
+pandas
+matplotlib
+seaborn
+scikit-learn

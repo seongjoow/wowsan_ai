@@ -1,0 +1,12 @@
+version: '3'
+services:
+  grpc-server:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    volumes:
+      - .:/app
+    ports:
+      - "50051:50051"
+    environment:
+      - PYTHONPATH=/app

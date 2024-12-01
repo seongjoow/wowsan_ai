@@ -89,8 +89,9 @@ class RealtimeNodeEmbeddingProcessor:
         """메시지 처리 스레드의 메인 루프"""
         while self.is_running:
             try:
+                if self.message_queue.empty():
+                    continue
                 timestamp, hop_log, tick_log = self.message_queue.get(timeout=1.0)
-                
                 with self.data_lock:
                     # 로그 저장
                     if hop_log:
@@ -114,8 +115,6 @@ class RealtimeNodeEmbeddingProcessor:
                                 self.embedding_queue.put(embeddings)
                 
                 self.message_queue.task_done()
-                
-            except Queue.Empty:
                 continue
             except Exception as e:
                 logger.error(f"Error processing message: {e}")
