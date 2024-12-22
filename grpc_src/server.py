@@ -155,7 +155,7 @@ class EmbeddingServiceServicer(embedding_service_pb2_grpc.EmbeddingServiceServic
             num_brokers=5,                   # 브로커 수
             input_timesteps=10,              # 시계열 윈도우 크기(초)
             selected_features=[              # 사용할 feature 리스트
-                "Cpu", "Memory", "Throughput", "ResponseTime"
+                "Throughput", "ResponseTime"
             ]
         )
 
@@ -163,7 +163,6 @@ class EmbeddingServiceServicer(embedding_service_pb2_grpc.EmbeddingServiceServic
     def SendProssessLog(self, request: embedding_service_pb2.SendProssessLogRequest, context):
         logging.info(f"Received SendProssessLog request with broker_address: {request.broker_address}")
         def tick_proto_request_to_dict(tick_proto_request: embedding_service_pb2.TickLog) -> dict:
-
             return {
                 "Cpu": tick_proto_request.Cpu,
                 "Memory": tick_proto_request.Memory,
@@ -173,7 +172,7 @@ class EmbeddingServiceServicer(embedding_service_pb2_grpc.EmbeddingServiceServic
                 "QueueLength": tick_proto_request.QueueLength,
                 "QueueTime": tick_proto_request.QueueTime,
                 "ServiceTime": tick_proto_request.ServiceTime,
-                "Timestamp": tick_proto_request.Time,
+                # "Timestamp": tick_proto_request.Time,
                 "time": tick_proto_request.Time
             }
         
@@ -199,6 +198,7 @@ class EmbeddingServiceServicer(embedding_service_pb2_grpc.EmbeddingServiceServic
                 "PerformanceInfo": performance_info_list,
                 "Msg": hop_proto_request.Msg,
                 "Level": hop_proto_request.Level,
+                "time": hop_proto_request.Time
             }
         if request.type == "HopLog":
             self.realtime_node_embedding_processor.add_message(

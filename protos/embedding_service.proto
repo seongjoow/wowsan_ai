@@ -39,6 +39,7 @@ message HopLog {
     repeated PerformanceInfo PerformanceInfo = 2;
     string Level = 3;
     string Msg = 4;
+    string Time = 5;
 }
 
 message PerformanceInfo {

@@ -39,7 +39,7 @@ def merge_dataframes(hop_df, tick_df) -> pd.DataFrame:
     # Additional columns from hop_df
     additional_columns = [col for col in hop_columns if col not in tick_columns]
 
-    # Fill the remaining columns from hop_df
-    result_df.update(hop_df.set_index('time')[additional_columns])
+    # # Fill the remaining columns from hop_df
+    # result_df.update(hop_df.set_index('time')[additional_columns])
 
     return result_df

@@ -36,7 +36,7 @@ class RealtimeNodeEmbeddingProcessor:
         self.device = device
         self.num_brokers = num_brokers
         self.input_timesteps = input_timesteps
-        self.selected_features = selected_features or ["Cpu", "Memory", "Throughput", "ResponseTime"]
+        self.selected_features = selected_features or ["Throughput", "ResponseTime"]
         
         # 원시 로그 저장소
         self.tick_logs = defaultdict(list)  # 키: timestamp
@@ -119,12 +119,18 @@ class RealtimeNodeEmbeddingProcessor:
                     
                     # 시계열 데이터 생성 및 전처리
                     df = self._create_time_series_data(timestamp)
+                    logger.info(f"시계열 데이터 생성 및 전처리")
                     if df is not None:
                         # 모델 입력 준비
                         model_input = self._prepare_data_for_model(df)
                         if model_input is not None:
                             # 노드 임베딩 계산
                             embeddings = self.get_node_embedding(model_input)
+                            
+                            # 노드 임베딩 값 출력
+                            logger.info(f"Node embeddings: {embeddings}")                            
+
+                            logger.info(f"노드 임베딩 계산")
                             if embeddings is not None:
                                 self.embedding_queue.put(embeddings)
                 try:
@@ -159,7 +165,7 @@ class RealtimeNodeEmbeddingProcessor:
             tick_times = set(self.tick_logs.keys())
             hop_times = set(self.hop_logs.keys())
             
-            # 2. 예상되는 모든 초 생성 (tick log가 있어야 할 시간들)
+            # 2-1. 예상되는 모든 초 생성 (tick log가 있어야 할 시간들)
             expected_times = set()
             current_time = pd.Timestamp(current_time)
             time_pointer = pd.Timestamp(start_time)
@@ -167,7 +173,7 @@ class RealtimeNodeEmbeddingProcessor:
                 expected_times.add(time_pointer)
                 time_pointer += pd.Timedelta(seconds=1)
             
-            # 3. 누락된 tick log 시간 확인
+            # 2-2. 누락된 tick log 시간 확인
             missing_times = expected_times - tick_times
             if missing_times:
                 logger.warning(f"Missing tick logs at: {missing_times} times count: {len(missing_times)}")
@@ -182,52 +188,115 @@ class RealtimeNodeEmbeddingProcessor:
                             return None
                     else:
                         consecutive_missing = 0
-            
-            # 4. 데이터 처리 (기존 로직)
-            logger.info(f"4. 데이터 처리 (기존 로직)")
-            processed_data = []
-            for timestamp in sorted(tick_times | hop_times):
+
+            # # 3. Hop 로그 처리
+            # hop_data = []
+            # for timestamp in sorted(hop_times):
+            #     if start_time <= timestamp <= current_time:
+            #         if timestamp in self.hop_logs:
+            #             hop_df = self._preprocess_hop_log(pd.DataFrame(self.hop_logs[timestamp]))
+            #             hop_data.append(hop_df)
+            # logger.info(f"3. Hop 로그 처리")
+
+            hop_data = []
+            for timestamp in sorted(hop_times):
                 if start_time <= timestamp <= current_time:
-                    hop_df = None
                     if timestamp in self.hop_logs:
-                        hop_df = self._preprocess_hop_log(
-                            pd.DataFrame(self.hop_logs[timestamp])
-                        )
-                    
-                    tick_df = None
+                        hop_data.append(pd.DataFrame(self.hop_logs[timestamp]))
+
+            full_hop_df = pd.concat(hop_data) if hop_data else None
+
+            if full_hop_df is not None:
+                full_hop_df = self._preprocess_hop_log(full_hop_df)
+                logger.info(f"3-1. Hop 로그 처리")
+                full_hop_df = self._handle_duplicate_times(full_hop_df)
+                logger.info(f"3-2. 중복 처리")
+            
+            # # 4. Hop 데이터 합치고 중복 처리
+            # full_hop_df = pd.concat(hop_data) if hop_data else None
+            # if full_hop_df is not None:
+            #     full_hop_df = self._handle_duplicate_times(full_hop_df)  # 중복 처리
+            #     # 중복 검사
+            #     duplicate_count = full_hop_df['time'].duplicated().sum()
+            #     if duplicate_count > 0:
+            #         logger.warning(f"Found {duplicate_count} duplicates in hop_df after handling")
+            # logger.info(f"4. Hop 데이터 합치고 중복 처리")
+
+            # 5. Tick 로그 처리
+            tick_data = []
+            for timestamp in sorted(tick_times):
+                if start_time <= timestamp <= current_time:
                     if timestamp in self.tick_logs:
                         tick_df = pd.DataFrame(self.tick_logs[timestamp])
+                        tick_data.append(tick_df)
+            
+            full_tick_df = pd.concat(tick_data) if tick_data else None
+            logger.info(f"5. Tick 로그 처리")
+            
+            # 6. Merge
+            if full_hop_df is not None or full_tick_df is not None:
+                merged_df = self._merge_logs(full_hop_df, full_tick_df)
+                
+                # 7. 누락된 시간에 대한 보간
+                if missing_times:
+                    merged_df.set_index('time', inplace=True)
+                    merged_df.index = pd.to_datetime(merged_df.index)  # datetime으로 변환
+                    merged_df = merged_df.sort_index()
+                    merged_df = merged_df.interpolate(method='time')
+                    merged_df.reset_index(inplace=True)
+                
+                logger.info(f"6. 로그 병합")
+                return merged_df
+
+            return None
+            
+            # # 4. 데이터 처리 (기존 로직)
+            # logger.info(f"4. 데이터 처리 (기존 로직)")
+            # processed_data = []
+            # for timestamp in sorted(tick_times | hop_times):
+            #     if start_time <= timestamp <= current_time:
+            #         hop_df = None
+            #         if timestamp in self.hop_logs:
+            #             hop_df = self._preprocess_hop_log(
+            #                 pd.DataFrame(self.hop_logs[timestamp])
+            #             )
+            #         logger.info(f"4-1. preprocessed hop log")
+            #         tick_df = None
+            #         if timestamp in self.tick_logs:
+            #             tick_df = pd.DataFrame(self.tick_logs[timestamp])
+            #         logger.info(f"4-2. preprocessed tick log")
                     
-                    if hop_df is not None or tick_df is not None:
-                        merged_df = self._merge_logs(hop_df, tick_df)
-                        processed_data.append(merged_df)
+            #         if hop_df is not None or tick_df is not None:
+            #             merged_df = self._merge_logs(hop_df, tick_df)
+            #             processed_data.append(merged_df)
+            #         logger.info(f"4-3. merged log")
             
-            if not processed_data:
-                return None
+            # if not processed_data:
+            #     return None
             
-            # 5. 데이터 병합 및 중복 처리 (기존 로직)
-            logger.info(f"5. 데이터 병합 및 중복 처리 (기존 로직)")
-            df = pd.concat(processed_data, ignore_index=True)
-            df = self._handle_duplicate_times(df)
+            # # 5. 데이터 병합 및 중복 처리 (기존 로직)
+            # logger.info(f"5. 데이터 병합 및 중복 처리 (기존 로직)")
+            # df = pd.concat(processed_data, ignore_index=True)
+            # df = self._handle_duplicate_times(df)
             
-            # 6. 누락된 시간에 대한 처리
-            logger.info(f"6. 누락된 시간에 대한 처리")
-            if missing_times:
-                df.set_index('time', inplace=True)
-                df = df.sort_index()
+            # # 6. 누락된 시간에 대한 처리
+            # logger.info(f"6. 누락된 시간에 대한 처리")
+            # if missing_times:
+            #     df.set_index('time', inplace=True)
+            #     df = df.sort_index()
                 
-                # 앞뒤 값의 평균으로 보간
-                # 주의: 이 부분은 실제 사용 케이스에 따라 다른 전략 선택 가능
-                # - 앞의 값 사용
-                # - 뒤의 값 사용
-                # - 평균값 사용
-                # - 기계학습 모델로 예측
-                df = df.interpolate(method='time')
+            #     # 앞뒤 값의 평균으로 보간
+            #     # 주의: 이 부분은 실제 사용 케이스에 따라 다른 전략 선택 가능
+            #     # - 앞의 값 사용
+            #     # - 뒤의 값 사용
+            #     # - 평균값 사용
+            #     # - 기계학습 모델로 예측
+            #     df = df.interpolate(method='time')
                 
-                # 인덱스 리셋
-                df.reset_index(inplace=True)
+            #     # 인덱스 리셋
+            #     df.reset_index(inplace=True)
             
-            return df
+            # return df
             
         except Exception as e:
             logger.error(f"Error creating time series data: {e}")
@@ -247,7 +316,7 @@ class RealtimeNodeEmbeddingProcessor:
             df[f'B{i}_InterArrivalTime'] = np.nan
             df[f'B{i}_Throughput'] = np.nan
             df[f'B{i}_m'] = np.nan
-            df[f'B{i}_TimestampDiff'] = np.nan
+            # df[f'B{i}_TimestampDiff'] = np.nan
 
         # DataFrame의 각 행 처리
         for idx, row in df.iterrows():
@@ -268,11 +337,11 @@ class RealtimeNodeEmbeddingProcessor:
                         df.at[idx, f'B{broker_index}_InterArrivalTime'] = float(broker_info.get('InterArrivalTime', np.nan))
                         df.at[idx, f'B{broker_index}_Throughput'] = float(broker_info.get('Throughput', np.nan))
                         
-                        # m 값 추출
-                        timestamp = broker_info.get('Timestamp', '')
-                        if timestamp and 'm=' in timestamp:
-                            m_value = float(timestamp.split('m=')[-1])
-                            df.at[idx, f'B{broker_index}_m'] = m_value
+                        # # m 값 추출
+                        # timestamp = broker_info.get('Timestamp', '')
+                        # if timestamp and 'm=' in timestamp:
+                        #     m_value = float(timestamp.split('m=')[-1])
+                        #     df.at[idx, f'B{broker_index}_m'] = m_value
 
         # PerformanceInfo 컬럼 삭제
         df.drop('PerformanceInfo', axis=1, inplace=True)
@@ -281,7 +350,7 @@ class RealtimeNodeEmbeddingProcessor:
     def _merge_logs(self, hop_df: pd.DataFrame, tick_df: pd.DataFrame) -> pd.DataFrame:
         """기존 로그 병합 코드"""
         """Tick 로그와 Hop 로그 병합"""
-        broker_index = 2  # 실제 상황에 맞게 조정 필요
+        broker_index = 3  # 실제 상황에 맞게 조정 필요
         
         # Tick 로그 컬럼 매핑
         tick_columns_mapping = {
@@ -296,34 +365,141 @@ class RealtimeNodeEmbeddingProcessor:
         }
         
         tick_df = tick_df.rename(columns=tick_columns_mapping)
-        return tick_df.merge(hop_df, on='Timestamp', how='left', suffixes=('', '_hop'))
+        # return tick_df.merge(hop_df, on='time', how='left', suffixes=('', '_hop'))
+
+        # 두 DataFrame 출력
+        logger.info(f"Tick DataFrame: {tick_df}")
+        logger.info(f"Hop DataFrame: {hop_df}")
+        
+        
+        
+
+        # Merge the two DataFrames
+        result_df = tick_df.merge(hop_df, on='time', how='left', suffixes=('', '_hop'))
+
+        # Extract column names
+        tick_columns = tick_df.columns.tolist()
+        hop_columns = hop_df.columns.tolist()
+
+        # Columns to be replaced in tick_df
+        replace_columns = [col for col in tick_columns if col != 'time']
+
+        # Replace tick_df values with hop_df values if they exist in hop_df
+        for col in replace_columns:
+            hop_col = col + '_hop'
+            if hop_col in result_df.columns:
+                result_df[col] = result_df[hop_col].combine_first(result_df[col])
+                result_df.drop(columns=[hop_col], inplace=True)
+
+        # Additional columns from hop_df
+        additional_columns = [col for col in hop_columns if col not in tick_columns]
+
+        # Fill the remaining columns from hop_df
+        result_df.update(hop_df.set_index('time')[additional_columns])
+
+        return result_df
 
     def _handle_duplicate_times(self, df: pd.DataFrame) -> pd.DataFrame:
         """기존 중복 처리 코드"""
         """중복된 시간 처리"""
-        def custom_agg(x):
-            non_zero = x[x != 0]
-            return non_zero.mean() if len(non_zero) > 0 else 0
-            
-        numeric_columns = df.select_dtypes(include=[np.number]).columns
-        agg_dict = {col: custom_agg for col in numeric_columns}
+        def get_group_columns(df, prefix):
+            """특정 Bn_ 프리픽스를 가진 컬럼들을 반환"""
+            return [col for col in df.columns if col.startswith(prefix)]
         
-        return df.groupby('time', as_index=False).agg(agg_dict)
+        def has_nonzero_values(row, columns):
+            """주어진 컬럼들 중에서 0이 아닌 값이 있는지 확인"""
+            return any(row[columns] != 0)
+        
+        def aggregate_group(group, bn_prefix, method):
+            """각 Bn_ 그룹에 대해 집계 수행"""
+            columns = get_group_columns(group, bn_prefix)
+            
+            # 해당 Bn_ 그룹의 컬럼들 중 하나라도 0이 아닌 값이 있는 행만 선택
+            valid_rows = group[group.apply(lambda row: has_nonzero_values(row, columns), axis=1)]
+            
+            if len(valid_rows) == 0:
+                # 모든 행이 해당 Bn_ 그룹에서 0인 경우
+                return pd.Series({col: 0 for col in columns})
+            
+            # 선택된 행들에 대해 평균 또는 최댓값 계산
+            if method == 'mean':
+                return valid_rows[columns].mean()
+            else:  # method == 'max'
+                return valid_rows[columns].max()
+        
+        # 결과를 저장할 빈 데이터프레임 생성
+        result_df = pd.DataFrame()
+        
+        # time로 그룹화
+        grouped = df.groupby('time')
+        
+        # 각 time 그룹에 대해 처리
+        for time, group in grouped:
+            row_dict = {'time': time}
+            
+            # 각 Bn_ 그룹별로 처리
+            for bn in ['B1_', 'B2_', 'B3_', 'B4_', 'B5_']:
+                agg_results = aggregate_group(group, bn, 'mean')
+                row_dict.update(agg_results)
+            
+            # 결과를 데이터프레임에 추가
+            result_df = pd.concat([result_df, pd.DataFrame([row_dict])], ignore_index=True)
+        
+        # time 컬럼을 첫 번째 컬럼으로 이동
+        cols = result_df.columns.tolist()
+        cols = ['time'] + [col for col in cols if col != 'time']
+        result_df = result_df[cols]
+        
+        return result_df
 
     def _prepare_data_for_model(self, df: pd.DataFrame) -> Optional[torch.Tensor]:
         """기존 모델 입력 준비 코드"""
         """DataFrame을 모델 입력 형태로 변환"""
         try:
+            #  # 시간 출력
+            # logger.info("Unique timestamps in data:")
+            # timestamps = df['time'].unique()
+            # for ts in sorted(timestamps):
+            #     logger.info(f"Timestamp: {ts}")
+            # logger.info(f"Total unique timestamps: {len(timestamps)}")
+
+            # # time별 데이터 개수 출력
+            # logger.info("Records per timestamp:")
+            # counts = df['time'].value_counts().sort_index()
+            # for time, count in counts.items():
+            #     logger.info(f"Timestamp {time}: {count} records")
+                
             # time 컬럼 제외하고 feature만 선택
-            feature_cols = [col for col in df.columns if col != 'time']
+            # feature_cols = [col for col in df.columns if col != 'time']
+            feature_cols = []
+            for feature in self.selected_features:
+                feature_cols.extend([col for col in df.columns if col.endswith(f'_{feature}')])
             df_features = df[feature_cols]
             
             # 스케일링 적용
             scaled_data = self.scaler_X.fit_transform(df_features)
+
+            # # 데이터 reshape: [timesteps, total_features] -> [timesteps, num_nodes, num_features]
+            # num_timesteps = min(len(scaled_data), self.input_timesteps)
             
-            # 텐서 변환 및 모델 입력 형태로 변환
-            x = torch.FloatTensor(scaled_data).to(self.device)
+            # 마지막 timesteps 개수만큼만 선택
+            if len(scaled_data) > self.input_timesteps:
+                scaled_data = scaled_data[-self.input_timesteps:]
+
+            # # reshape 전에 크기 확인
+            # expected_size = self.input_timesteps * self.num_brokers * len(self.selected_features)
+            # current_size = scaled_data.size
             
+            # logger.info(f"Expected size: {expected_size}, Current size: {current_size}")
+            # logger.info(f"Shape before reshape: {scaled_data.shape}")
+
+            # reshape
+            x = scaled_data.reshape(self.input_timesteps, self.num_brokers, len(self.selected_features))
+            
+            # 텐서로 변환 (배치 차원은 추가하지 않음) 및 모델 입력 형태로 변환
+            x = torch.FloatTensor(x).to(self.device)
+            
+            logger.info(f"Final shape: {x.shape}")
             return x
             
         except Exception as e:

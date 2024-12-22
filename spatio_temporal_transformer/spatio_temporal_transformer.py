@@ -559,10 +559,10 @@ if __name__ == "__main__":
 
     # Parameters
     experiment_config = {
-        'file_path': './preprocessed_data_sttransformer/176/merged_df.csv',
+        'file_path': './preprocessed_data_sttransformer/210/merged_df.csv',
         'input_timesteps': 10,
         'forecast_horizon': 2,
-        'target_node': "B2",
+        'target_node': "B3",
         'target_feature': "ResponseTime",
         'selected_features': ["Throughput", "ResponseTime"],
         'batch_size': 32,
@@ -635,7 +635,7 @@ if __name__ == "__main__":
 
     # 특정 데이터에 대한 어텐션 맵 시각화
     # Visualize attention weights for a specific date
-    target_date = "2024-11-10 20:04:30"  # 원하는 날짜 지정
+    target_date = "2024-11-30 19:28:00"  # 원하는 날짜 지정
     data_idx = find_data_by_date(test_dataset, target_date)
     sample_data = test_dataset[data_idx][0].unsqueeze(0).to(device)
 

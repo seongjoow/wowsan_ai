@@ -4,6 +4,7 @@ import grpc
 import sys
 import os
 import threading
+import random
 
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 sys.path.append('/app/generated')
@@ -23,25 +24,34 @@ def send_hop_logs(stub):
                 PerformanceInfo=[
                     embedding_service_pb2.PerformanceInfo(
                         BrokerId='localhost:50003',
-                        Cpu=58.481087,
-                        Memory=22659072,
-                        QueueLength=0,
-                        QueueTime=0.109688,
-                        ServiceTime=0.0,
-                        ResponseTime=0.109688,
-                        InterArrivalTime=0.0,
-                        Throughput=9.116759,
+                        # Cpu=58.481087,
+                        # Memory=22659072,
+                        # QueueLength=0,
+                        # QueueTime=0.109688,
+                        # ServiceTime=0.0,
+                        # ResponseTime=0.109688,
+                        # InterArrivalTime=0.0,
+                        # Throughput=9.116759,
+                        Cpu=random.uniform(0, 100),
+                        Memory=random.uniform(20000000, 25000000),
+                        QueueLength=random.randint(0, 10),
+                        QueueTime=random.uniform(0, 1),
+                        ServiceTime=random.uniform(0, 1),
+                        ResponseTime=random.uniform(0, 1),
+                        InterArrivalTime=random.uniform(0, 1),
+                        Throughput=random.uniform(0, 10),
                         Timestamp=str(datetime.now()),
-                        Time=str(datetime.now()),
+                        # Time=str(datetime.now()),
                     ),
                 ],
                 Level='info',
-                Msg='Advertisement(apple > 0.45) message-id-123'
+                Msg='Advertisement(apple > 0.45) message-id-123',
+                Time=str(datetime.now().replace(microsecond=0)),
             )
         )
         send_hop_logs_response = stub.SendProssessLog(send_hop_logs_request)
         print(f"Sent hop log: {send_hop_logs_response}")
-        time.sleep(0.1)  # 每 0.1 秒发送一次
+        time.sleep(0.7)  # 每 0.1 秒发送一次
 
 def send_tick_logs(stub: embedding_service_pb2_grpc.EmbeddingServiceStub):
     """Every 1 second send a TickLog"""
@@ -50,21 +60,28 @@ def send_tick_logs(stub: embedding_service_pb2_grpc.EmbeddingServiceStub):
             broker_address="broker_address2",
             type="TickLog",
             TickLog=embedding_service_pb2.TickLog(
-                Cpu=58.342480,
-                Memory=23302144.0,
-                QueueLength=0,
-                QueueTime=0.300874,
-                ServiceTime=0.0,
-                ResponseTime=0.300874,
-                InterArrivalTime=0.0,
-                Throughput=3.323645,
+                # Cpu=58.342480,
+                # Memory=23302144.0,
+                # QueueLength=0,
+                # QueueTime=0.300874,
+                # ServiceTime=0.0,
+                # ResponseTime=0.300874,
+                # InterArrivalTime=0.0,
+                # Throughput=3.323645,
+                Cpu=random.uniform(0, 100),
+                Memory=random.uniform(20000000, 25000000),
+                QueueLength=random.randint(0, 10),
+                QueueTime=random.uniform(0, 1),
+                ServiceTime=random.uniform(0, 1),
+                ResponseTime=random.uniform(0, 1),
+                InterArrivalTime=random.uniform(0, 1),
+                Throughput=random.uniform(0, 10),
                 Time=str(datetime.now().replace(microsecond=0)),
             )
         )
         send_tick_logs_response = stub.SendProssessLog(send_tick_logs_request)
         print(f"Sent tick log: {send_tick_logs_response}")
         time.sleep(1)  # 每 1 秒发送一次
-
 
 
 def run():

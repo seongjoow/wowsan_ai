@@ -111,9 +111,11 @@ class HopLog(google.protobuf.message.Message):
     PERFORMANCEINFO_FIELD_NUMBER: builtins.int
     LEVEL_FIELD_NUMBER: builtins.int
     MSG_FIELD_NUMBER: builtins.int
+    TIME_FIELD_NUMBER: builtins.int
     Node: builtins.str
     Level: builtins.str
     Msg: builtins.str
+    Time: builtins.str
     @property
     def PerformanceInfo(self) -> google.protobuf.internal.containers.RepeatedCompositeFieldContainer[global___PerformanceInfo]: ...
     def __init__(
@@ -123,8 +125,9 @@ class HopLog(google.protobuf.message.Message):
         PerformanceInfo: collections.abc.Iterable[global___PerformanceInfo] | None = ...,
         Level: builtins.str = ...,
         Msg: builtins.str = ...,
+        Time: builtins.str = ...,
     ) -> None: ...
-    def ClearField(self, field_name: typing.Literal["Level", b"Level", "Msg", b"Msg", "Node", b"Node", "PerformanceInfo", b"PerformanceInfo"]) -> None: ...
+    def ClearField(self, field_name: typing.Literal["Level", b"Level", "Msg", b"Msg", "Node", b"Node", "PerformanceInfo", b"PerformanceInfo", "Time", b"Time"]) -> None: ...
 
 global___HopLog = HopLog
 
