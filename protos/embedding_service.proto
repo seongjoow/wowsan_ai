@@ -24,8 +24,8 @@ message CallModelResponse {
 
 message TickLog {
     float Cpu = 1;
-    float Memory = 2;
-    float QueueLength = 3;
+    int64 Memory = 2;
+    int32 QueueLength = 3;
     float QueueTime = 4;
     float ServiceTime = 5;
     float ResponseTime = 6;

@@ -78,8 +78,8 @@ class TickLog(google.protobuf.message.Message):
     THROUGHPUT_FIELD_NUMBER: builtins.int
     TIME_FIELD_NUMBER: builtins.int
     Cpu: builtins.float
-    Memory: builtins.float
-    QueueLength: builtins.float
+    Memory: builtins.int
+    QueueLength: builtins.int
     QueueTime: builtins.float
     ServiceTime: builtins.float
     ResponseTime: builtins.float
@@ -90,8 +90,8 @@ class TickLog(google.protobuf.message.Message):
         self,
         *,
         Cpu: builtins.float = ...,
-        Memory: builtins.float = ...,
-        QueueLength: builtins.float = ...,
+        Memory: builtins.int = ...,
+        QueueLength: builtins.int = ...,
         QueueTime: builtins.float = ...,
         ServiceTime: builtins.float = ...,
         ResponseTime: builtins.float = ...,
