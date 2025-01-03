@@ -79,7 +79,7 @@ class PerformanceDataset(Dataset):
             y.append(target_values)
 
             # 추가: 첫 번째 시점의 인덱스 저장
-            indices.append(data.index[i])
+            indices.append(data.index[i+self.input_timesteps-1])
         
         self.indices = np.array(indices)  # 클래스 변수로 저장
         return np.array(X, dtype=np.float32), np.array(y, dtype=np.float32)
