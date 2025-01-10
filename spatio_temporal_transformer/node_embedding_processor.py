@@ -371,8 +371,6 @@ class RealtimeNodeEmbeddingProcessor:
         logger.info(f"Tick DataFrame: {tick_df}")
         logger.info(f"Hop DataFrame: {hop_df}")
         
-        
-        
 
         # Merge the two DataFrames
         result_df = tick_df.merge(hop_df, on='time', how='left', suffixes=('', '_hop'))

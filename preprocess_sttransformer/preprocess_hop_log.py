@@ -38,15 +38,30 @@ def parse_performance_info(num_brokers : int, df : pd.DataFrame) -> pd.DataFrame
                     # broker_id에서 포트 번호를 추출하고 50000을 뺌
                     port_number = int(broker_id.split(':')[-1])
                     broker_index = port_number - 50000
+                    
                     # 해당 브로커 인덱스의 각 세부 정보 컬럼에 데이터 저장
-                    df.at[idx, f'B{broker_index}_Cpu'] = broker_info.get('Cpu', np.nan)
-                    df.at[idx, f'B{broker_index}_Memory'] = broker_info.get('Memory', np.nan)
-                    df.at[idx, f'B{broker_index}_QueueLength'] = broker_info.get('QueueLength', np.nan)
-                    df.at[idx, f'B{broker_index}_QueueTime'] = broker_info.get('QueueTime', np.nan)
-                    df.at[idx, f'B{broker_index}_ServiceTime'] = broker_info.get('ServiceTime', np.nan)
-                    df.at[idx, f'B{broker_index}_ResponseTime'] = broker_info.get('ResponseTime', np.nan)
-                    df.at[idx, f'B{broker_index}_InterArrivalTime'] = broker_info.get('InterArrivalTime', np.nan)
-                    df.at[idx, f'B{broker_index}_Throughput'] = broker_info.get('Throughput', np.nan)
+                    # df.at[idx, f'B{broker_index}_Cpu'] = broker_info.get('Cpu', np.nan)
+                    # df.at[idx, f'B{broker_index}_Memory'] = broker_info.get('Memory', np.nan)
+                    # df.at[idx, f'B{broker_index}_QueueLength'] = broker_info.get('QueueLength', np.nan)
+                    # df.at[idx, f'B{broker_index}_QueueTime'] = broker_info.get('QueueTime', np.nan)
+                    # df.at[idx, f'B{broker_index}_ServiceTime'] = broker_info.get('ServiceTime', np.nan)
+                    # df.at[idx, f'B{broker_index}_ResponseTime'] = broker_info.get('ResponseTime', np.nan)
+                    # df.at[idx, f'B{broker_index}_InterArrivalTime'] = broker_info.get('InterArrivalTime', np.nan)
+                    # df.at[idx, f'B{broker_index}_Throughput'] = broker_info.get('Throughput', np.nan)
+                    # 값을 가져올 때 명시적으로 float로 변환
+                    try:
+                        df.at[idx, f'B{broker_index}_Cpu'] = float(broker_info.get('Cpu', np.nan))
+                        df.at[idx, f'B{broker_index}_Memory'] = float(broker_info.get('Memory', np.nan))
+                        df.at[idx, f'B{broker_index}_QueueLength'] = float(broker_info.get('QueueLength', np.nan))
+                        df.at[idx, f'B{broker_index}_QueueTime'] = float(broker_info.get('QueueTime', np.nan))
+                        df.at[idx, f'B{broker_index}_ServiceTime'] = float(broker_info.get('ServiceTime', np.nan))
+                        df.at[idx, f'B{broker_index}_ResponseTime'] = float(broker_info.get('ResponseTime', np.nan))
+                        df.at[idx, f'B{broker_index}_InterArrivalTime'] = float(broker_info.get('InterArrivalTime', np.nan))
+                        df.at[idx, f'B{broker_index}_Throughput'] = float(broker_info.get('Throughput', np.nan))
+                    except (ValueError, TypeError):
+                        # 변환 실패 시 np.nan 할당
+                        print(f"Warning: Type conversion failed at index {idx} for broker {broker_index}")
+                        continue
                     # df.at[idx, f'B{broker_index}_Timestamp'] = broker_info.get('Timestamp', np.nan)                
 
                     # 현재 요소의 m 값 추출

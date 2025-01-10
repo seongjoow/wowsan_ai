@@ -11,10 +11,6 @@ import logging
 from typing import List, Tuple, Dict
 import json
 from pathlib import Path
-from itertools import product
-from collections import defaultdict
-import csv
-import gc
 
 print(torch.__version__)
 
@@ -47,6 +43,9 @@ class PerformanceDataset(Dataset):
         
         # 데이터 준비
         self.X, self.y = self._prepare_data(self.filtered_data)
+
+        # 임베딩 저장용 속성 추가
+        self.embeddings = None
     
     def _get_unique_nodes(self, data):
         """데이터에서 unique한 노드 이름 추출"""
@@ -83,16 +82,30 @@ class PerformanceDataset(Dataset):
             y.append(target_values)
 
             # 추가: 첫 번째 시점의 인덱스 저장
-            indices.append(data.index[i+self.input_timesteps-1])
+            indices.append(data.index[i+self.input_timesteps-1])  ##########
         
         self.indices = np.array(indices)  # 클래스 변수로 저장
         return np.array(X, dtype=np.float32), np.array(y, dtype=np.float32)
+    
+    def set_embeddings(self, embeddings_df):
+        """ 임베딩 데이터 설정 """
+        self.embeddings = torch.tensor(
+            embeddings_df.loc[self.indices].values, # timestamps로 정확히 매칭
+            dtype=torch.float32
+        )
     
     def __len__(self):
         return len(self.X)
     
     def __getitem__(self, index):
-        return torch.from_numpy(self.X[index]), torch.from_numpy(self.y[index])
+        x = torch.from_numpy(self.X[index])
+        y = torch.from_numpy(self.y[index])
+
+        if self.embeddings is not None:
+            emb = self.embeddings[index]
+            return x, emb, y  # 임베딩도 함께 반환
+        
+        return x, y
     
     @property
     def num_nodes(self):
@@ -101,6 +114,7 @@ class PerformanceDataset(Dataset):
     @property
     def num_features(self):
         return len(self.selected_features)
+
     
 class CustomTransformerEncoderLayer(nn.Module):
     def __init__(self, d_model, nhead, dim_feedforward=2048, dropout=0.1, activation="relu"):
@@ -140,6 +154,7 @@ class SpatioTemporalTransformer(nn.Module):
                  num_features: int,
                  input_timesteps: int,
                  forecast_horizon: int,
+                 d_embedding: int,  # 노드 임베딩 차원 추가
                  d_model: int = 128,
                  nhead: int = 8,
                  num_layers: int = 3,
@@ -150,6 +165,11 @@ class SpatioTemporalTransformer(nn.Module):
         self.num_features = num_features
         self.input_timesteps = input_timesteps
         self.forecast_horizon = forecast_horizon
+        self.d_model = d_model  # 인스턴스 변수로 저장
+        self.d_embedding = d_embedding  # 인스턴스 변수로 저장
+
+        # 임베딩 변환용 레이어
+        self.embedding_projection = nn.Linear(d_model, d_embedding)
         
         # 임베딩 레이어
         self.feature_embedding = nn.Linear(1, d_model)
@@ -158,7 +178,7 @@ class SpatioTemporalTransformer(nn.Module):
         self.temporal_encoding = nn.Parameter(torch.zeros(1, input_timesteps, d_model))
         self.node_encoding = nn.Parameter(torch.zeros(1, num_nodes, d_model))
         self.feature_encoding = nn.Parameter(torch.zeros(1, num_features, d_model))
-        
+
         # Custom Transformer Encoder Layers
         self.encoder_layers = nn.ModuleList([
             CustomTransformerEncoderLayer(
@@ -180,45 +200,110 @@ class SpatioTemporalTransformer(nn.Module):
         # attention weights 저장용
         self.attention_weights = []
         
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
+    def forward(self, x: torch.Tensor, precomputed_emb: torch.Tensor) -> torch.Tensor:
+        # x(성능 지표): [batch, timesteps * nodes * features]
+        # precomputed_emb(임베딩 토큰): [batch, d_model] 
+
         batch_size = x.size(0)
-        
-        # 입력 reshape: (batch, timesteps * nodes * features) -> (batch, timesteps, nodes, features)
+
+        # 1. metric 데이터 (성능 지표) 처리
         x = x.view(batch_size, self.input_timesteps, self.num_nodes, self.num_features)
-        
-        # feature 임베딩을 위해 차원 추가
-        x = x.unsqueeze(-1)  # (batch, timesteps, nodes, features, 1)
-        x = self.feature_embedding(x)  # (batch, timesteps, nodes, features, d_model)
-        
-        # 인코딩 추가
+        x = x.unsqueeze(-1) # [batch, timesteps, nodes, features, 1]
+        x = self.feature_embedding(x) # [batch, timesteps, nodes, features, d_model]
+
+        # Add encodings
         x = x + self.temporal_encoding.unsqueeze(2).unsqueeze(3)
         x = x + self.node_encoding.unsqueeze(1).unsqueeze(3)
         x = x + self.feature_encoding.unsqueeze(1).unsqueeze(2)
-        
-        # Transformer 입력을 위한 reshape
+
+        # Reshape x to sequence of tokens
         x = x.view(batch_size, self.input_timesteps * self.num_nodes * self.num_features, -1)
-        
-        # Initialize attention weights list
+        # shape: [batch, sequence_length, d_model]
+        # sequence_length = timesteps * nodes * features
+
+        # 2. Add embedding token
+        assert precomputed_emb.size() == (batch_size, self.d_embedding), f"Expected embedding shape {(batch_size, self.d_embedding)}, got {precomputed_emb.size()}"
+        precomputed_emb = precomputed_emb.unsqueeze(1)  # [batch, 1, d_embedding]
+
+        # zero padding to match d_model dimension
+        padding = torch.zeros(batch_size, 1, self.d_model - self.d_embedding, device=x.device)
+        precomputed_emb = torch.cat([precomputed_emb, padding], dim=2)  # [batch, 1, d_model]
+
+        # 3. Concatenate precomputed embedding with metric data
+        combined = torch.cat([x, precomputed_emb], dim=1) # shape: [batch, (sequence_length + 1), d_model]
+
+        # 4. 인코더 레이어 통과
         self.attention_weights = []
-        
         # Pass through each custom encoder layer and collect attention weights
         for layer in self.encoder_layers:
-            x, attn_weights = layer(x)
+            combined, attn_weights = layer(combined)
             self.attention_weights.append(attn_weights)
         
-        # Global average pooling
-        x = x.mean(dim=1)
+        # 5. Global average pooling
+        combined = combined.mean(dim=1)
+        # 입력: [batch_size, sequence_length, d_model]
+        # mean(dim=1)로 sequence_length 차원을 평균
+        # 출력: [batch_size, d_model]
         
         # 회귀 예측
-        return self.regression_head(x)
+        return self.regression_head(combined)
     
-    def get_attention_weights(self, x: torch.Tensor) -> List[torch.Tensor]:
-        """어텐션 가중치 추출"""
-        self.attention_weights = []
+    # def get_attention_weights(self, x: torch.Tensor) -> List[torch.Tensor]:
+    #     """어텐션 가중치 추출"""
+    #     self.attention_weights = []
+    #     self.forward(x)
+    #     return self.attention_weights
+    
+    def get_attention_weights(self, x: torch.Tensor, precomputed_emb: torch.Tensor) -> List[torch.Tensor]:
+        """어텐션 가중치 추출 - 임베딩을 포함한 전체 입력에 대한 어텐션 시각화"""
+        self.eval()
+        with torch.no_grad():
+            # forward와 동일한 처리 과정
+            _ = self.forward(x, precomputed_emb) # 결과값은 사용하지 않음
+            return self.attention_weights
+    
+    # def get_node_embedding(self, x: torch.Tensor) -> torch.Tensor:
+    #     """
+    #     데이터 포인트로부터 해당 노드의 표현(representation)을 추출하는 함수
         
-        self.forward(x)
+    #     Args:
+    #         x: 입력 데이터 (batch_size, timesteps * nodes * features)
+    #         하나의 데이터 포인트는 네트워크의 spatio-temporal 특성을 포함
+    #     Returns:
+    #         representation: shape (batch_size, d_model)
+    #         각 데이터 포인트에 대한 노드 표현 벡터
+
+    #     참고: 이 함수로 추출한 representation은 다시 모델의 입력으로 사용될 때
+    #     precomputed_emb 파라미터로 전달됩니다.
+    #     """
+    #     self.eval()  # 평가 모드로 설정
+    #     with torch.no_grad():
+    #         batch_size = x.size(0)
+            
+    #         # 입력 데이터 전처리
+    #         x = x.view(batch_size, self.input_timesteps, self.num_nodes, self.num_features)
+    #         x = x.unsqueeze(-1)
+    #         x = self.feature_embedding(x)
+            
+    #         # 인코딩 추가
+    #         x = x + self.temporal_encoding.unsqueeze(2).unsqueeze(3)
+    #         x = x + self.node_encoding.unsqueeze(1).unsqueeze(3)
+    #         x = x + self.feature_encoding.unsqueeze(1).unsqueeze(2)
+            
+    #         # Transformer 입력 형태로 변환
+    #         x = x.view(batch_size, self.input_timesteps * self.num_nodes * self.num_features, -1)
+            
+    #         # 인코더 레이어 통과
+    #         for layer in self.encoder_layers:
+    #             x, _ = layer(x)
+            
+    #         # # [batch, sequence, d_model] -> [batch, timesteps, nodes, features, d_model]
+    #         # x = x.view(batch_size, self.input_timesteps, self.num_nodes, self.num_features, -1)
+            
+    #         # 전체 특성을 종합하여 노드 표현 추출
+    #         node_embeddings = x.mean(dim=1)  # [batch, d_model]
         
-        return self.attention_weights
+    #         return node_embeddings
 
 class ExperimentManager:
     def __init__(self,
@@ -230,7 +315,8 @@ class ExperimentManager:
                  criterion: nn.Module,
                  device: torch.device,
                  experiment_config: dict,
-                 base_save_dir: str = "results"):
+                 # base_save_dir: str = "results"
+                 save_dir: Path):
         self.model = model
         self.train_loader = train_loader
         self.val_loader = val_loader
@@ -239,11 +325,12 @@ class ExperimentManager:
         self.criterion = criterion
         self.device = device
         self.experiment_config = experiment_config
+        self.save_dir = save_dir
         
-        # Create a descriptive folder name based on experiment configuration
-        folder_name = self._create_experiment_folder_name()
-        self.save_dir = Path(base_save_dir) / folder_name
-        self.save_dir.mkdir(parents=True, exist_ok=True)
+        # # Create a descriptive folder name based on experiment configuration
+        # folder_name = self._create_experiment_folder_name()
+        # self.save_dir = Path(base_save_dir) / folder_name
+        # self.save_dir.mkdir(parents=True, exist_ok=True)
         
         # Save experiment configuration
         self._save_experiment_config()
@@ -251,29 +338,6 @@ class ExperimentManager:
         self.best_val_loss = float('inf')
         self.train_losses = []
         self.val_losses = []
-    
-    def _create_experiment_folder_name(self) -> str:
-        """Create a descriptive folder name based on experiment configuration"""
-        config = self.experiment_config
-        # Format timestamp
-        timestamp = pd.Timestamp.now().strftime("%Y%m%d_%H%M%S")
-        
-        # Create folder name components
-        components = [
-            timestamp,
-            f"node_{config['target_node']}",
-            f"feature_{config['target_feature']}",
-            f"in{config['input_timesteps']}_out{config['forecast_horizon']}",
-            f"d{config['d_model']}_h{config['nhead']}_l{config['num_layers']}",
-            f"bs{config['batch_size']}_lr{config['learning_rate']:.0e}"
-        ]
-        
-        # Add selected features if specified
-        if config.get('selected_features'):
-            features_str = '_'.join(f[:2] for f in config['selected_features'])
-            components.append(f"feat_{features_str}")
-        
-        return "__".join(components)
     
     def _save_experiment_config(self):
         """Save experiment configuration as JSON"""
@@ -286,12 +350,13 @@ class ExperimentManager:
         self.model.train()
         total_loss = 0
         
-        for batch_data, batch_targets in self.train_loader:
+        for batch_data, batch_emb, batch_targets in self.train_loader:
             batch_data = batch_data.to(self.device)
+            batch_emb = batch_emb.to(self.device) # 임베딩도 디바이스로 이동
             batch_targets = batch_targets.to(self.device)
             
             self.optimizer.zero_grad()
-            outputs = self.model(batch_data)
+            outputs = self.model(batch_data, batch_emb)  # 임베딩도 모델에 전달
             loss = self.criterion(outputs, batch_targets)
             
             loss.backward()
@@ -306,11 +371,12 @@ class ExperimentManager:
         total_loss = 0
         
         with torch.no_grad():
-            for batch_data, batch_targets in self.val_loader:
+            for batch_data, batch_emb, batch_targets in self.val_loader:
                 batch_data = batch_data.to(self.device)
+                batch_emb = batch_emb.to(self.device)  # 임베딩도 디바이스로 이동
                 batch_targets = batch_targets.to(self.device)
                 
-                outputs = self.model(batch_data)
+                outputs = self.model(batch_data, batch_emb)  # 임베딩도 모델에 전달
                 loss = self.criterion(outputs, batch_targets)
                 total_loss += loss.item()
                 
@@ -331,7 +397,7 @@ class ExperimentManager:
             
             if val_loss < self.best_val_loss:
                 self.best_val_loss = val_loss
-                self.save_checkpoint(f"best_model.pth")
+                self.save_checkpoint(f"best_model_stt_emb.pth")
                 early_stopping_counter = 0
             else:
                 early_stopping_counter += 1
@@ -348,9 +414,12 @@ class ExperimentManager:
         all_targets = []
         
         with torch.no_grad():
-            for batch_data, batch_targets in self.test_loader:
+            for batch_data, batch_emb, batch_targets in self.test_loader:
                 batch_data = batch_data.to(self.device)
-                outputs = self.model(batch_data)
+                batch_emb = batch_emb.to(self.device)  # 임베딩도 디바이스로 이동
+                # batch_targets = batch_targets.to(self.device)
+
+                outputs = self.model(batch_data, batch_emb)  # 임베딩도 모델에 전달
                 all_preds.extend(outputs.cpu().numpy())
                 all_targets.extend(batch_targets.numpy())
                 
@@ -387,17 +456,19 @@ class ExperimentManager:
         plt.close()
         
     def visualize_attention(self, 
-                         sample_data: torch.Tensor,
-                         node_names: List[str],
-                         feature_names: List[str],
-                         layer_idx: int = 0,
-                         test_dataset = None,
-                         timestamp = None):
+                        sample_data: torch.Tensor,
+                        precomputed_emb: torch.Tensor,  # 임베딩 파라미터 추가
+                        node_names: List[str],
+                        feature_names: List[str],
+                        layer_idx: int = 0,
+                        test_dataset = None,
+                        timestamp = None):
         """
         특정 레이어의 어텐션 맵 시각화
         
         Args:
             sample_data: 입력 데이터 텐서 (batch, timesteps * nodes * features)
+            precomputed_emb: 미리 계산된 임베딩 텐서 (batch, d_embedding)
             node_names: 노드 이름 리스트
             feature_names: 특성 이름 리스트
             layer_idx: 시각화할 레이어 인덱스
@@ -405,7 +476,7 @@ class ExperimentManager:
             timestamp: 시각화 대상 시점 (str 또는 datetime)
         """
         self.model.eval()
-        attention_weights = self.model.get_attention_weights(sample_data)
+        attention_weights = self.model.get_attention_weights(sample_data, precomputed_emb)
         
         if not attention_weights or layer_idx >= len(attention_weights):
             print(f"Attention weights not available for layer {layer_idx}")
@@ -417,19 +488,23 @@ class ExperimentManager:
         num_nodes = self.model.num_nodes
         num_features = self.model.num_features
         
+        # 레이블 생성 - 이제 임베딩도 포함
         labels = []
         for t in range(num_timesteps):
             for n in node_names:
+                # 성능 지표 레이블
                 for f in feature_names:
                     labels.append(f"t{t+1}_{n}_{f}")
+        # 임베딩 레이블
+        labels.append(f"t{t+1}_{n}_Embedding")
         
         plt.figure(figsize=(20, 16))
 
         # 히트맵 생성
         ax = sns.heatmap(layer_attention.detach().cpu().numpy(), 
-              xticklabels=labels,
-              yticklabels=labels,
-              cmap='viridis')
+                        xticklabels=labels,
+                        yticklabels=labels,
+                        cmap='viridis')
         
         # x축 레이블을 위쪽에 표시
         ax.xaxis.tick_top()
@@ -559,191 +634,104 @@ def prepare_data(file_path, input_timesteps, forecast_horizon, target_node, targ
     return train_dataset, val_dataset, test_dataset, scaler_X, scaler_y, node_names, feature_names
 
 
-if __name__ == "__main__":
-    from utils import find_data_by_date
+# if __name__ == "__main__":
+#     from utils import find_data_by_date
 
-    # 기본 설정 값을 포함한 base_config 정의
-    base_config = {
-        'file_path': './preprocessed_data_sttransformer/176/merged_df.csv',
-        'input_timesteps': 10,
-        'forecast_horizon': 2,
-        'target_node': "B2",
-        'target_feature': "ResponseTime",
-        'selected_features': ["Throughput", "ResponseTime"],
-        'num_epochs': 100
-    }
-
-    # 그리드 서치를 위한 파라미터 정의
-    grid_params = {
-        'batch_size': [32, 64, 128],
-        'patience': [5, 10, 15],
-        'learning_rate': [1e-3, 1e-4, 1e-5],
-        'd_model': [64, 128, 256],
-        'nhead': [4, 8, 16],
-        'num_layers': [2, 3, 4],
-        'dropout': [0.1, 0.2, 0.3]
-    }
-
-    # 그리드 서치
-    all_params = [dict(zip(grid_params.keys(), values)) for values in product(*grid_params.values())]
-
-    all_metrics = defaultdict(list)
-    best_val_loss = float('inf')
-    best_params = None
-
-    num_trials = 15  # 각 조합에 대해 3회 실험
-
-    for params in all_params:
-        param_val_losses = []
-        for _ in range(num_trials):
-            # 실험 설정 업데이트 - base_config를 복사한 후 현재 파라미터 적용
-            current_config = base_config.copy()
-            current_config.update(params)
-
-            # 데이터 준비 및 모델 초기화
-            train_dataset, val_dataset, test_dataset, scaler_X, scaler_y, node_names, feature_names = prepare_data(
-                current_config['file_path'],
-                current_config['input_timesteps'],
-                current_config['forecast_horizon'],
-                current_config['target_node'],
-                current_config['target_feature'],
-                current_config['selected_features'],
-                batch_size=current_config['batch_size']
-            )
-
-            # 나머지 코드는 동일하되, experiment_config 대신 current_config 사용
-            train_loader = DataLoader(train_dataset, batch_size=current_config['batch_size'], shuffle=True)
-            val_loader = DataLoader(val_dataset, batch_size=current_config['batch_size'])
-            test_loader = DataLoader(test_dataset, batch_size=current_config['batch_size'])
-
-            device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-            model = SpatioTemporalTransformer(
-                num_nodes=train_dataset.num_nodes,
-                num_features=train_dataset.num_features,
-                input_timesteps=current_config['input_timesteps'],
-                forecast_horizon=current_config['forecast_horizon'],
-                d_model=current_config['d_model'],
-                nhead=current_config['nhead'],
-                num_layers=current_config['num_layers'],
-                dropout=current_config['dropout']
-            ).to(device)
-
-            optimizer = torch.optim.Adam(model.parameters(), lr=current_config['learning_rate'])
-            criterion = nn.MSELoss()
-
-            experiment = ExperimentManager(
-                model=model,
-                train_loader=train_loader,
-                val_loader=val_loader,
-                test_loader=test_loader,
-                optimizer=optimizer,
-                criterion=criterion,
-                device=device,
-                experiment_config=current_config,
-                base_save_dir="results"
-            )
-
-            # 모델 학습 및 검증
-            experiment.train(num_epochs=current_config['num_epochs'], 
-                            patience=current_config['patience'])
-            param_val_losses.append(experiment.best_val_loss)
-
-        # ... (이전 그리드 서치 코드에 이어서)
-        
-        avg_val_loss = sum(param_val_losses) / num_trials
-        for k, v in experiment.test().items():
-            all_metrics[k].append(v)
-
-        if avg_val_loss < best_val_loss:
-            best_val_loss = avg_val_loss
-            best_params = params.copy()
-
-        print(f"Experiment with {params} - Avg Val Loss: {avg_val_loss:.4f}")
-
-    print("Best hyperparameters:", best_params)
-
-    # 실험 결과를 CSV 파일로 저장
-    csv_filename = "experiment_results.csv"
-    with open(csv_filename, "w", newline="") as csvfile:
-        writer = csv.writer(csvfile)
-        writer.writerow(["Metric"] + [f"Trial {i+1}" for i in range(len(all_params) * num_trials)])
-        for metric, values in all_metrics.items():
-            writer.writerow([metric] + [f"{v:.4f}" for v in values])
-
-    print(f"Experiment results saved to: {csv_filename}")
-
-    # 최적 파라미터로 최종 테스트 수행
-    final_config = base_config.copy()
-    final_config.update(best_params)
-
-    # 최종 테스트를 위한 데이터 준비
-    train_dataset, val_dataset, test_dataset, scaler_X, scaler_y, node_names, feature_names = prepare_data(
-        final_config['file_path'],
-        final_config['input_timesteps'],
-        final_config['forecast_horizon'],
-        final_config['target_node'],
-        final_config['target_feature'],
-        final_config['selected_features'],
-        batch_size=final_config['batch_size']
-    )
-
-    train_loader = DataLoader(train_dataset, batch_size=final_config['batch_size'], shuffle=True)
-    val_loader = DataLoader(val_dataset, batch_size=final_config['batch_size'])
-    test_loader = DataLoader(test_dataset, batch_size=final_config['batch_size'])
-
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    model = SpatioTemporalTransformer(
-        num_nodes=train_dataset.num_nodes,
-        num_features=train_dataset.num_features,
-        input_timesteps=final_config['input_timesteps'],
-        forecast_horizon=final_config['forecast_horizon'],
-        d_model=final_config['d_model'],
-        nhead=final_config['nhead'],
-        num_layers=final_config['num_layers'],
-        dropout=final_config['dropout']
-    ).to(device)
-
-    optimizer = torch.optim.Adam(model.parameters(), lr=final_config['learning_rate'])
-    criterion = nn.MSELoss()
-
-    experiment = ExperimentManager(
-        model=model,
-        train_loader=train_loader,
-        val_loader=val_loader,
-        test_loader=test_loader,
-        optimizer=optimizer,
-        criterion=criterion,
-        device=device,
-        experiment_config=final_config,
-        base_save_dir="results"
-    )
-
-    metrics = experiment.test()
-    print("Test Metrics:", metrics)
+#     # Parameters
+#     experiment_config = {
+#         'file_path': './preprocessed_data_sttransformer/176/merged_df.csv',
+#         'input_timesteps': 10,
+#         'forecast_horizon': 2,
+#         'target_node': "B2",
+#         'target_feature': "ResponseTime",
+#         'selected_features': ["Throughput", "ResponseTime"],
+#         'batch_size': 32,
+#         'num_epochs': 100,
+#         'patience': 10,
+#         'learning_rate': 1e-3,
+#         'd_embedding': 64,  # 노드 임베딩 차원 추가
+#         'd_model': 128,
+#         'nhead': 8,
+#         'num_layers': 3,
+#         'dropout': 0.1
+#     }
     
-    # 어텐션 가중치 시각화
-    target_date = "2024-11-10 20:04:30"  # 원하는 날짜 지정
-    data_idx = find_data_by_date(test_dataset, target_date)
-    sample_data = test_dataset[data_idx][0].unsqueeze(0).to(device)
+#     # Prepare data
+#     (train_loader, val_loader, test_loader,
+#      scaler_X, scaler_y, 
+#      node_names, feature_names,
+#      test_dataset) = prepare_data(
+#         experiment_config['file_path'],
+#         experiment_config['input_timesteps'],
+#         experiment_config['forecast_horizon'],
+#         experiment_config['target_node'],
+#         experiment_config['target_feature'],
+#         experiment_config['selected_features'],
+#         batch_size=experiment_config['batch_size']
+#     )
+    
+#     # Initialize model, optimizer, and loss function
+#     # Initialize model - d_embedding 파라미터 추가
+#     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+#     model = SpatioTemporalTransformer(
+#         num_nodes=len(node_names),
+#         num_features=len(feature_names),
+#         input_timesteps=experiment_config['input_timesteps'],
+#         forecast_horizon=experiment_config['forecast_horizon'],
+#         d_embedding=experiment_config['d_embedding'],  # 추가
+#         d_model=experiment_config['d_model'],
+#         nhead=experiment_config['nhead'],
+#         num_layers=experiment_config['num_layers'],
+#         dropout=experiment_config['dropout']
+#     ).to(device)
+    
+#     optimizer = torch.optim.Adam(model.parameters(), lr=experiment_config['learning_rate'])
+#     criterion = nn.MSELoss()
+    
+#     # Initialize experiment manager
+#     experiment = ExperimentManager(
+#         model=model,
+#         train_loader=train_loader,
+#         val_loader=val_loader,
+#         test_loader=test_loader,
+#         optimizer=optimizer,
+#         criterion=criterion,
+#         device=device,
+#         experiment_config=experiment_config,
+#         base_save_dir="results"
+#     )
+    
+#     # Train the model
+#     experiment.train(num_epochs=experiment_config['num_epochs'], 
+#                     patience=experiment_config['patience'])
+    
+#     # Test the model
+#     metrics = experiment.test()
+#     print("Test Metrics:", metrics)
+    
+#     # Visualize attention weights
 
-    # 실제 사용된 날짜
-    actual_date = test_dataset.indices[data_idx]
+#     # testset의 첫 번째 배치 데이터로 시각화
+#     # sample_data, _ = next(iter(test_loader))
+#     # sample_data = sample_data.to(device)
 
-    # 전체 레이어에 대한 어텐션 맵 시각화
-    num_layers = len(model.encoder_layers)
-    for i in range(num_layers):
-        experiment.visualize_attention(
-            sample_data,
-            node_names,
-            feature_names,
-            layer_idx=i,
-            test_dataset=test_dataset,
-            timestamp=actual_date
-        )
+#     # 특정 데이터에 대한 어텐션 맵 시각화
+#     # Visualize attention weights for a specific date
+#     target_date = "2024-11-10 20:04:30"  # 원하는 날짜 지정
+#     data_idx = find_data_by_date(test_dataset, target_date)
+#     sample_data = test_dataset[data_idx][0].unsqueeze(0).to(device)
 
-    # 메모리 및 파일 정리
-    if torch.cuda.is_available():
-        torch.cuda.empty_cache()
+#     # 실제 사용된 날짜 (정확한 날짜가 없는 경우 가장 가까운 날짜가 사용됨)
+#     actual_date = test_dataset.indices[data_idx]
 
-    del model, optimizer, criterion
-    gc.collect()
+#     # 전체 레이어에 대한 어텐션 맵 시각화
+#     num_layers = len(model.encoder_layers)
+#     for i in range(num_layers):
+#         experiment.visualize_attention(
+#             sample_data,
+#             node_names,
+#             feature_names,
+#             layer_idx=i,
+#             test_dataset=test_dataset,
+#             timestamp=actual_date  # 실제 사용된 날짜
+#         )
