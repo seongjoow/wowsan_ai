@@ -242,7 +242,7 @@ def prepare_experiment_stt_emb(timestamp, file_name, simulation_id, port, input_
         'batch_size': 32,
         'num_epochs': 100,
         'patience': 10,
-        'learning_rate': 1e-3,
+        'learning_rate': 1e-4,
         'd_model': 128,
         'nhead': 8,
         'num_layers': 3,
@@ -493,6 +493,7 @@ def extract_embeddings(port, simulation_id, device, experiment_path):
     return embeddings_df
 
 
+
 if __name__ == "__main__":
     # DIR_NAME = 210
     # NUM_BROKERS = 5
@@ -511,7 +512,7 @@ if __name__ == "__main__":
         gc.collect()
 
     broker_ports = [50003, 50004, 50005]
-    simulation_id = 210
+    simulation_id = 225
     firsthalf_dfs = {}
     secondhalf_dfs = {}
 
@@ -658,7 +659,6 @@ if __name__ == "__main__":
     #     dataset.set_embeddings(embeddings_df)
 
 
-
     # 성능 지표와 임베딩 데이터를 사용하여 B3 모델 학습
     # 임베딩이 있는 두 번째 시간대 데이터로 B3 모델 학습
     print("\nTraining B3 model with embeddings...")
@@ -675,7 +675,7 @@ if __name__ == "__main__":
 
     # 노드 임베딩 불러오기
     embeddings_df = pd.read_csv(
-        Path(experiment_paths[broker_port]) / 'node_embeddings.csv',
+        Path(experiment_paths[50004]) / 'node_embeddings.csv',
         index_col=0)
     embeddings_df.index = pd.to_datetime(embeddings_df.index)
     d_embedding = embeddings_df.shape[1]  # 임베딩 차원
@@ -686,6 +686,9 @@ if __name__ == "__main__":
 
     # experiment_config에 d_embedding 추가
     # experiment_config['d_embedding'] = d_embedding
+
+    # save_path = f"./thesis_sttransformer/unitcase2/final_datasets/{simulation_id}/{broker_port}"
+    # utils.save_all_performance_datasets(train_loader, val_loader, test_loader, save_path)
 
     # 모델 초기화 및 학습
     experiment = train_model_stt_emb(experiment_config, train_loader, val_loader, test_loader, device, save_dir)
@@ -699,41 +702,79 @@ if __name__ == "__main__":
     # 어텐션 맵 시각화
     print("\n=== Visualizing attention maps ===")
 
-    # # 테스트셋에서 한 배치 데이터 가져오기
+    # # [옵션1] 테스트셋에서 한 배치 데이터 사용
     # batch_data, batch_emb, batch_targets = next(iter(test_loader))
     # batch_data = batch_data.to(device)
     # batch_emb = batch_emb.to(device)
 
-    # 특정 timestamp의 데이터 찾기 (선택적)
-    specific_time = "2024-11-30 19:00:00"  # 예시 시간
-    data_idx = utils.find_data_by_datetime(test_loader.dataset, specific_time)
-    if data_idx is not None:
-        metrics = test_loader.dataset[data_idx][0].unsqueeze(0).to(device)
-        embeddings = test_loader.dataset[data_idx][1].unsqueeze(0).to(device)
-        timestamp = test_loader.dataset.indices[data_idx]
-    else:
-        # 첫 번째 배치의 첫 번째 데이터 사용
-        metrics, embeddings, _ = next(iter(test_loader))
-        metrics = metrics[0:1].to(device)  # 첫 번째 데이터만 사용
-        embeddings = embeddings[0:1].to(device)
-        timestamp = test_loader.dataset.indices[0]  # 첫 번째 데이터의 timestamp
+    # # [옵션2] 특정 timestamp의 데이터 사용
+    # specific_time = "2025-01-05 14:04:00"  # 예시 시간
+    # data_idx = utils.find_data_by_datetime(test_loader.dataset, specific_time)
+    # if data_idx is not None:
+    #     metrics = test_loader.dataset[data_idx][0].unsqueeze(0).to(device)
+    #     embeddings = test_loader.dataset[data_idx][1].unsqueeze(0).to(device)
+    #     timestamp = test_loader.dataset.indices[data_idx]
+    # else:
+    #     # 첫 번째 배치의 첫 번째 데이터 사용
+    #     metrics, embeddings, _ = next(iter(test_loader))
+    #     metrics = metrics[0:1].to(device)  # 첫 번째 데이터만 사용
+    #     embeddings = embeddings[0:1].to(device)
+    #     timestamp = test_loader.dataset.indices[0]  # 첫 번째 데이터의 timestamp
 
-    # 전체 레이어에 대한 어텐션 맵 시각화
-    num_layers = len(experiment.model.encoder_layers)
-    for i in range(num_layers):
-        experiment.visualize_attention(
-            sample_data=metrics,  # 성능 지표 데이터
-            precomputed_emb=embeddings,  # 임베딩 데이터 추가
-            node_names=node_names,
-            feature_names=feature_names,
-            layer_idx=i,
-            test_dataset=test_loader.dataset,
-            timestamp=timestamp
-        )
+    # # 전체 레이어에 대한 어텐션 맵 시각화
+    # num_layers = len(experiment.model.encoder_layers)
+    # for i in range(num_layers):
+    #     experiment.visualize_attention(
+    #         sample_data=metrics,  # 성능 지표 데이터
+    #         precomputed_emb=embeddings,  # 임베딩 데이터 추가
+    #         node_names=node_names,
+    #         feature_names=feature_names,
+    #         layer_idx=i,
+    #         test_dataset=test_loader.dataset,
+    #         timestamp=timestamp
+    #     )
+
+    # print("\nExperiment completed successfully!")
+    # print(f"Results saved in: {save_dir}")
+
+
+    # [옵션3] 특정 기간의 데이터 사용
+    # 특정 timestamp의 시작 인덱스 찾기
+    specific_time = "2025-01-05 14:04:00"  # 예시 시간
+    start_idx = utils.find_data_by_datetime(test_loader.dataset, specific_time)
+
+    if start_idx is not None:
+        # 시작 인덱스부터 180개 데이터 처리 (3분)
+        end_idx = min(start_idx + 180, len(test_loader.dataset))  # 데이터셋 범위를 넘지 않도록
+        
+        print(f"\nProcessing attention maps from index {start_idx} to {end_idx-1}")
+        print(f"Start time: {test_loader.dataset.indices[start_idx]}")
+        print(f"End time: {test_loader.dataset.indices[end_idx-1]}")
+        
+        for data_idx in range(start_idx, end_idx):
+            metrics = test_loader.dataset[data_idx][0].unsqueeze(0).to(device)
+            embeddings = test_loader.dataset[data_idx][1].unsqueeze(0).to(device)
+            timestamp = test_loader.dataset.indices[data_idx]
+            
+            print(f"\nProcessing attention maps for timestamp: {timestamp}")
+            
+            # 전체 레이어에 대한 어텐션 맵 시각화
+            num_layers = len(experiment.model.encoder_layers)
+            for i in range(num_layers):
+                experiment.visualize_attention(
+                    sample_data=metrics,
+                    precomputed_emb=embeddings,
+                    node_names=node_names,
+                    feature_names=feature_names,
+                    layer_idx=i,
+                    test_dataset=test_loader.dataset,
+                    timestamp=timestamp
+                )
+    else:
+        print(f"Specified time {specific_time} not found in dataset")
 
     print("\nExperiment completed successfully!")
     print(f"Results saved in: {save_dir}")
-
     
     # 메모리 정리
     del experiment

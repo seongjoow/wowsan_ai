@@ -88,7 +88,22 @@ class PerformanceDataset(Dataset):
         return np.array(X, dtype=np.float32), np.array(y, dtype=np.float32)
     
     def set_embeddings(self, embeddings_df):
-        """ 임베딩 데이터 설정 """
+        """ 임베딩 데이터 설정 - 매칭되는 timestamp만 사용 """
+        # 존재하는 인덱스만 필터링
+        valid_indices = [idx for idx in self.indices if idx in embeddings_df.index]
+        
+        # 원본 인덱스에서의 위치를 찾아서 해당 위치의 데이터만 유지
+        original_indices = self.indices
+        valid_positions = [i for i, idx in enumerate(original_indices) if idx in valid_indices]
+        
+        # X, y 데이터 필터링
+        self.X = self.X[valid_positions]
+        self.y = self.y[valid_positions]
+        
+        # indices 업데이트
+        self.indices = valid_indices
+        
+        # 임베딩 데이터 설정
         self.embeddings = torch.tensor(
             embeddings_df.loc[self.indices].values, # timestamps로 정확히 매칭
             dtype=torch.float32
@@ -452,7 +467,7 @@ class ExperimentManager:
         plt.title('Training History')
         plt.legend()
         
-        plt.savefig(self.save_dir / 'training_history.png')
+        plt.savefig(self.save_dir / 'training_history_emb.png')
         plt.close()
         
     def visualize_attention(self, 
@@ -496,7 +511,7 @@ class ExperimentManager:
                 for f in feature_names:
                     labels.append(f"t{t+1}_{n}_{f}")
         # 임베딩 레이블
-        labels.append(f"t{t+1}_{n}_Embedding")
+        labels.append(f"t{t+1}_B4_Embedding")
         
         plt.figure(figsize=(20, 16))
 
@@ -524,10 +539,10 @@ class ExperimentManager:
         plt.tight_layout()
 
         # 파일명에 timestamp 포함
-        filename = f'attention_map_layer_{layer_idx+1}'
+        filename = f'attention_map'
         if timestamp:
             filename += f'_{timestamp.strftime("%Y%m%d_%H%M%S")}'
-        filename += '.png'
+        filename += f'_layer_{layer_idx+1}.png'
         
         plt.savefig(self.save_dir / filename)
         plt.close()

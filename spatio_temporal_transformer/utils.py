@@ -146,3 +146,91 @@ def predict(model, data, scaler_y=None):
             predictions = scaler_y.inverse_transform(predictions.reshape(-1, 1)).reshape(predictions.shape)
             
         return predictions
+
+
+def save_performance_dataset_to_csv(dataset, save_path, dataset_type):
+    """
+    PerformanceDataset을 CSV 형식으로 저장하는 함수
+    
+    Args:
+        dataset: PerformanceDataset 객체
+        save_path: 저장할 디렉토리 경로
+        dataset_type: 'train', 'val', 'test' 중 하나
+    """
+    # 저장 경로 생성
+    save_dir = Path(save_path)
+    save_dir.mkdir(parents=True, exist_ok=True)
+    
+    # 데이터 준비
+    data_list = []
+    num_features = len(dataset.node_list) * len(dataset.selected_features)
+    
+    for i in range(len(dataset)):
+        # 원본 입력 데이터 (flatten된 상태)
+        X = dataset.X[i]
+        # 타겟 값
+        y = dataset.y[i]
+        # 타임스탬프
+        timestamp = dataset.indices[i]
+        # 임베딩 (있는 경우)
+        embedding = dataset.embeddings[i] if dataset.embeddings is not None else None
+        
+        # flatten된 입력 데이터를 원래 형태로 복원
+        # shape: (input_timesteps, num_nodes * num_features)
+        X_reshaped = X.reshape(dataset.input_timesteps, num_features)
+        
+        row_dict = {
+            'timestamp': timestamp,
+            'target_node': dataset.target_node,
+            'target_feature': dataset.target_feature,
+        }
+        
+        # 입력 데이터 추가
+        for t in range(dataset.input_timesteps):
+            for node_idx, node in enumerate(dataset.node_list):
+                for feat_idx, feature in enumerate(dataset.selected_features):
+                    col_idx = node_idx * len(dataset.selected_features) + feat_idx
+                    col_name = f't{t}_{node}_{feature}'
+                    row_dict[col_name] = X_reshaped[t, col_idx]
+        
+        # 타겟 값 추가
+        for h in range(dataset.forecast_horizon):
+            row_dict[f'target_t{h}'] = y[h]
+        
+        # 임베딩 추가 (있는 경우)
+        if embedding is not None:
+            for e in range(len(embedding)):
+                row_dict[f'embedding_{e}'] = embedding[e]
+        
+        data_list.append(row_dict)
+    
+    # DataFrame 생성 및 저장
+    df = pd.DataFrame(data_list)
+    csv_path = save_dir / f'{dataset_type}_dataset_with_embeddings.csv'
+    df.to_csv(csv_path, index=False)
+    
+    print(f"\nSaved {dataset_type} dataset to {csv_path}")
+    print(f"Dataset shape: {df.shape}")
+    print("\nColumns:")
+    print(df.columns.tolist())
+    return df
+
+def save_all_performance_datasets(train_loader, val_loader, test_loader, save_path):
+    """
+    모든 PerformanceDataset을 CSV로 저장
+    """
+    print("Saving PerformanceDatasets with embeddings...")
+    
+    train_df = save_performance_dataset_to_csv(train_loader.dataset, save_path, 'train')
+    val_df = save_performance_dataset_to_csv(val_loader.dataset, save_path, 'val')
+    test_df = save_performance_dataset_to_csv(test_loader.dataset, save_path, 'test')
+    
+    # 데이터셋 통계 출력
+    print("\nDataset Statistics:")
+    for name, df in [('Train', train_df), ('Validation', val_df), ('Test', test_df)]:
+        print(f"\n{name} Dataset:")
+        print(f"- Samples: {len(df)}")
+        print(f"- Timesteps: {train_loader.dataset.input_timesteps}")
+        print(f"- Forecast Horizon: {train_loader.dataset.forecast_horizon}")
+        if train_loader.dataset.embeddings is not None:
+            print(f"- Embedding Dimension: {len(train_loader.dataset.embeddings[0])}")
